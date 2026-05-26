@@ -227,7 +227,10 @@ def _filter_unsupported_params(kwargs: Dict[str, Any], model_id: str) -> Dict[st
         # repeat_penalty is Ollama-specific
         kwargs.pop("repeat_penalty", None)
     if _is_openai_reasoning_model(model_id):
-        for k in ("top_p", "top_k", "frequency_penalty", "presence_penalty"):
+        # gpt-5 / o1 / o3 / o4 family: only the API default temperature (1) is
+        # accepted, and the other sampling knobs are unsupported. Drop them all
+        # — the upstream uses its defaults.
+        for k in ("top_p", "top_k", "frequency_penalty", "presence_penalty", "temperature"):
             kwargs.pop(k, None)
     elif provider == "openai":
         # OpenAI chat completions don't accept top_k
