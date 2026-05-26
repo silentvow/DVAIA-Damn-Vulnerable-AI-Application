@@ -102,26 +102,12 @@ def apply_startup_reset() -> Dict[str, Any]:
 
 def warmup_llm_backends() -> Dict[str, Any]:
     """
-    Eager-load LLM clients so the first user prompt is not paying import/connection setup cost.
+    Eager-load LiteLLM so the first user prompt does not pay import cost.
     Does not send a generation request (no API tokens consumed).
     """
-    from core.config import gemini_configured, is_gemini_only_mode, is_openai_only_mode, openai_configured
+    try:
+        from core import litellm_client  # noqa: F401
 
-    warmed = []
-    if gemini_configured() or is_gemini_only_mode():
-        try:
-            from core.gemini_client import _get_client
-
-            _get_client()
-            warmed.append("gemini")
-        except Exception:
-            pass
-    if openai_configured() or is_openai_only_mode():
-        try:
-            from core.openai_client import _get_client
-
-            _get_client()
-            warmed.append("openai")
-        except Exception:
-            pass
-    return {"warmed": warmed}
+        return {"warmed": ["litellm"]}
+    except Exception:
+        return {"warmed": []}

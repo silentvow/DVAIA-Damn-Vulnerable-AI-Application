@@ -15,11 +15,11 @@ try:
 except ImportError:
     load_dotenv = None  # type: ignore
 
-DEFAULT_MODEL = "ollama:llama3.2"
+DEFAULT_MODEL = "ollama/llama3.2"
 # Agentic panel: thinking model (e.g. qwen3:0.6b) for CoT visibility; override with AGENTIC_MODEL
-AGENTIC_MODEL = "qwen3:0.6b"
+AGENTIC_MODEL = "ollama/qwen3:0.6b"
 # Document Injection vision path: image files sent directly to a VLM; override with VISION_MODEL
-VISION_MODEL = "ollama:qwen2.5vl:7b"
+VISION_MODEL = "ollama/qwen2.5vl:7b"
 # Document Injection audio extract path: local Whisper via faster-whisper; override with WHISPER_MODEL
 WHISPER_MODEL = "base"
 WHISPER_DEVICE = "cpu"
@@ -148,22 +148,29 @@ def get_port() -> int:
         return PORT_DEFAULT
 
 
+def _normalize_model_id(value: str) -> str:
+    """Convert legacy 'provider:model' to LiteLLM 'provider/model'. Lazy import avoids cycles."""
+    from core.litellm_client import normalize_model_id
+
+    return normalize_model_id(value)
+
+
 def get_default_model_id() -> str:
     """Default model from .env (DEFAULT_MODEL). Loads project .env when resolving."""
     _ensure_env_loaded()
-    return os.getenv("DEFAULT_MODEL", DEFAULT_MODEL)
+    return _normalize_model_id(os.getenv("DEFAULT_MODEL", DEFAULT_MODEL))
 
 
 def get_agentic_model_id() -> str:
-    """Model for Agentic panel (thinking/CoT). From .env AGENTIC_MODEL; default qwen3:0.6b."""
+    """Model for Agentic panel (thinking/CoT). From .env AGENTIC_MODEL; default ollama/qwen3:0.6b."""
     _ensure_env_loaded()
-    return os.getenv("AGENTIC_MODEL", AGENTIC_MODEL).strip() or AGENTIC_MODEL
+    return _normalize_model_id(os.getenv("AGENTIC_MODEL", AGENTIC_MODEL).strip() or AGENTIC_MODEL)
 
 
 def get_vision_model_id() -> str:
     """Model for Document Injection vision mode (image bytes to VLM). From .env VISION_MODEL."""
     _ensure_env_loaded()
-    return os.getenv("VISION_MODEL", VISION_MODEL).strip() or VISION_MODEL
+    return _normalize_model_id(os.getenv("VISION_MODEL", VISION_MODEL).strip() or VISION_MODEL)
 
 
 def get_whisper_model_name() -> str:

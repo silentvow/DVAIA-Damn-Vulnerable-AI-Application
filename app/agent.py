@@ -14,7 +14,6 @@ from app import db as app_db
 from core.content_utils import extract_text_content
 from core.config import get_agentic_model_id
 from core.llm import get_llm
-from core.providers import detect_provider
 
 
 # --- Testing tools (SQLite): read-only + dangerous-by-design for red-team ---
@@ -151,10 +150,8 @@ def run_agent(
     tools = _get_tools_subset(tool_names)
     if not tools:
         tools = list(ALL_AGENT_TOOLS)  # fallback if filter excluded everything
-    llm_kwargs: Dict[str, Any] = {"timeout": timeout}
-    if detect_provider(resolved_model) == "ollama":
-        llm_kwargs["reasoning"] = True
-    llm = get_llm(resolved_model, **llm_kwargs).bind_tools(tools)
+    # Thinking-model think=True is auto-applied inside core.llm.get_llm() for qwen3 / deepseek-r1.
+    llm = get_llm(resolved_model, timeout=timeout).bind_tools(tools)
     prior = list(messages) if messages else []
     lc_messages = _messages_to_lc(prior)
     lc_messages.append(HumanMessage(content=prompt))

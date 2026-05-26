@@ -1,14 +1,10 @@
 """
-LangChain LLM factory: get_llm(model_id) returns a BaseChatModel for simple or agentic use.
+LangChain LLM factory: get_llm(model_id) returns a BaseChatModel backed by LiteLLM.
 
-Use for:
-  - Simple: llm.invoke(messages) or use core.models.generate()
-  - Agentic: llm.bind_tools(tools), create_react_agent(), RAG chains, etc.
-
-Backends:
-  - Ollama local (OLLAMA_HOST): ollama:llama3.2 or bare model name
-  - Gemini cloud (GOOGLE_API_KEY): gemini:gemini-2.0-flash or google:...
-  - OpenAI cloud (OPENAI_API_KEY): openai:gpt-4o-mini
+All providers route through ChatLiteLLM, so any LiteLLM-supported provider
+(~100+) is available through the same LangChain interface:
+  - llm.invoke(messages) for simple calls
+  - llm.bind_tools(tools) + ReAct loop for agentic (see app/agent.py)
 """
 import warnings
 from typing import Any, Optional
@@ -18,50 +14,8 @@ warnings.filterwarnings(
     message=".*Pydantic V1.*Python 3.14.*",
 )
 
-from core.config import get_default_model_id, get_google_api_key, get_openai_api_key, get_ollama_host
-from core.providers import detect_provider, strip_provider_prefix
-
-OLLAMA_PREFIX = "ollama:"
-GEMINI_PREFIX = "gemini:"
-
-
-def _ollama_model_name(model_id: str) -> str:
-    """Extract Ollama model name (strip ollama: prefix if present)."""
-    name = strip_provider_prefix(model_id)
-    return name or "llama3.2"
-
-
-def _gemini_model_name(model_id: str) -> str:
-    """Extract Gemini model name (strip gemini:/google: prefix)."""
-    s = (model_id or "").strip()
-    lower = s.lower()
-    if lower.startswith("google:"):
-        return s[len("google:") :].strip() or "gemini-2.0-flash"
-    return strip_provider_prefix(s) or "gemini-2.0-flash"
-
-
-def _require_gemini_key() -> str:
-    key = get_google_api_key()
-    if not key:
-        raise RuntimeError(
-            "Gemini selected but GOOGLE_API_KEY is not set. "
-            "Add your Google AI Studio key to .env or choose Local (Ollama) in the UI."
-        )
-    return key
-
-
-def _openai_model_name(model_id: str) -> str:
-    return strip_provider_prefix(model_id) or "gpt-4o-mini"
-
-
-def _require_openai_key() -> str:
-    key = get_openai_api_key()
-    if not key:
-        raise RuntimeError(
-            "OpenAI selected but OPENAI_API_KEY is not set. "
-            "Add your API key to .env or choose another backend in Settings."
-        )
-    return key
+from core import litellm_client
+from core.config import get_default_model_id, get_ollama_host
 
 
 def get_llm(
@@ -71,51 +25,43 @@ def get_llm(
     **kwargs: Any,
 ) -> Any:
     """
-    Return a LangChain chat model for the given model_id.
+    Return a LangChain ChatLiteLLM for the given model_id.
 
-    Uses DEFAULT_MODEL from env when model_id is not passed.
-    Routes to ChatOllama or ChatGoogleGenerativeAI by prefix.
+    Accepts legacy 'provider:model' or 'google:...' prefixes; converts to
+    LiteLLM's '<provider>/<model>' canonical form.
     """
-    resolved = (model_id or get_default_model_id()).strip()
-    if not resolved:
-        resolved = get_default_model_id()
+    resolved = (model_id or get_default_model_id()).strip() or get_default_model_id()
+    normalized = litellm_client.normalize_model_id(resolved)
+    provider = litellm_client.detect_provider(normalized)
 
-    provider = detect_provider(resolved)
+    # Map legacy kwargs to LiteLLM equivalents.
+    if "num_predict" in kwargs and "max_tokens" not in kwargs:
+        kwargs["max_tokens"] = kwargs.pop("num_predict")
+    if "max_output_tokens" in kwargs and "max_tokens" not in kwargs:
+        kwargs["max_tokens"] = kwargs.pop("max_output_tokens")
+    # Legacy ChatOllama 'reasoning' flag: handled below via extra_body for thinking models.
+    kwargs.pop("reasoning", None)
 
-    if provider == "openai":
-        api_key = _require_openai_key()
-        name = _openai_model_name(resolved)
-        openai_kwargs = {k: v for k, v in kwargs.items() if k not in ("reasoning", "repeat_penalty", "top_k")}
-        if "max_output_tokens" in openai_kwargs and "max_tokens" not in openai_kwargs:
-            openai_kwargs["max_tokens"] = openai_kwargs.pop("max_output_tokens")
-        from langchain_openai import ChatOpenAI
+    extra_kwargs: dict = {}
 
-        return ChatOpenAI(
-            model=name,
-            api_key=api_key,
-            timeout=timeout,
-            **openai_kwargs,
-        )
+    if provider in ("ollama", "ollama_chat"):
+        host = get_ollama_host().rstrip("/")
+        if host:
+            extra_kwargs["api_base"] = host
 
-    if provider == "gemini":
-        api_key = _require_gemini_key()
-        name = _gemini_model_name(resolved)
-        gemini_kwargs = {k: v for k, v in kwargs.items() if k != "reasoning"}
-        from langchain_google_genai import ChatGoogleGenerativeAI
+    if litellm_client._is_thinking_model(normalized):
+        # Ollama: think=true; LiteLLM forwards via extra_body.
+        extra_kwargs.setdefault("model_kwargs", {})["extra_body"] = {"think": True}
 
-        return ChatGoogleGenerativeAI(
-            model=name,
-            google_api_key=api_key,
-            timeout=timeout,
-            **gemini_kwargs,
-        )
+    try:
+        from langchain_litellm import ChatLiteLLM
+    except ImportError:
+        # Fallback for older deployments shipping langchain-community's wrapper.
+        from langchain_community.chat_models import ChatLiteLLM  # type: ignore
 
-    name = _ollama_model_name(resolved)
-    from langchain_ollama import ChatOllama
-
-    return ChatOllama(
-        model=name,
-        base_url=get_ollama_host().rstrip("/"),
+    return ChatLiteLLM(
+        model=normalized,
         timeout=timeout,
+        **extra_kwargs,
         **kwargs,
     )
