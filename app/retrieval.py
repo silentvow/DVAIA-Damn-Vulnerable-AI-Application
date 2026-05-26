@@ -48,6 +48,13 @@ def add_document(source: str, text: str, llm_provider: Optional[str] = None) -> 
 
 def add_chunk(source: str, content: str, llm_provider: Optional[str] = None) -> str:
     """Insert a chunk and compute its embedding; store in Qdrant. Returns point id (UUID string)."""
+    if not app_embeddings.rag_enabled():
+        raise RuntimeError(
+            "RAG is disabled: EMBEDDING_MODEL is unset or set to 'none'. "
+            "Set EMBEDDING_MODEL in .env to a LiteLLM-supported embedding "
+            "model (e.g. ollama/nomic-embed-text or openai/text-embedding-3-small) "
+            "and restart to enable indexing."
+        )
     to_embed = content if len(content) <= _EMBED_MAX_CHARS else content[:_EMBED_MAX_CHARS]
     vec = app_embeddings.embed_text(to_embed, llm_provider=llm_provider)
     if not vec:

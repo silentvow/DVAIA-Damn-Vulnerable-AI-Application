@@ -49,9 +49,47 @@ _PROVIDER_ENV_KEYS: Dict[str, List[str]] = {
     "bedrock":      ["AWS_ACCESS_KEY_ID", "AWS_PROFILE"],
     "azure":        ["AZURE_API_KEY", "AZURE_OPENAI_API_KEY"],
     "huggingface":  ["HUGGINGFACE_API_KEY", "HF_TOKEN"],
+    # Custom prefixes routed through a LiteLLM-native proxy (LITELLM_PROXY_API_BASE).
+    # 'dev' is the conventional team-proxy namespace; override with
+    # LITELLM_PROXY_PROVIDERS=alias1,alias2 to register more.
+    "dev":          ["LITELLM_PROXY_API_BASE"],
 }
 
-_KNOWN_PROVIDERS = set(_PROVIDER_ENV_KEYS.keys()) | {"ollama", "ollama_chat", "google"}
+_KNOWN_PROVIDERS = set(_PROVIDER_ENV_KEYS.keys()) | {"ollama", "ollama_chat", "google", "litellm_proxy"}
+
+
+def _proxy_provider_prefixes() -> set[str]:
+    """Provider prefixes that should be rerouted through the team LiteLLM proxy."""
+    raw = os.getenv("LITELLM_PROXY_PROVIDERS", "dev").strip()
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def _proxy_kwargs() -> Dict[str, Any]:
+    """Return api_base / api_key kwargs for the team LiteLLM proxy, if configured."""
+    base = os.getenv("LITELLM_PROXY_API_BASE", "").strip().rstrip("/")
+    if not base:
+        return {}
+    out: Dict[str, Any] = {"api_base": base}
+    key = os.getenv("LITELLM_PROXY_API_KEY", "").strip()
+    if key:
+        out["api_key"] = key
+    return out
+
+
+def _route_via_proxy(model_id: str) -> str:
+    """
+    If a model id starts with a configured proxy provider prefix (default 'dev/'),
+    rewrite it to litellm_proxy/<original> so LiteLLM SDK sends the raw model name
+    to the team proxy via its OpenAI-compatible chat/completions endpoint.
+    """
+    if not model_id or "/" not in model_id:
+        return model_id
+    head = model_id.split("/", 1)[0].lower()
+    if head == "litellm_proxy":
+        return model_id
+    if head in _proxy_provider_prefixes() and _proxy_kwargs():
+        return f"litellm_proxy/{model_id}"
+    return model_id
 
 
 def normalize_model_id(model_id: Optional[str]) -> str:
@@ -169,13 +207,15 @@ def _completion_kwargs(options: Optional[Dict[str, Any]] = None) -> Dict[str, An
 
 
 def _provider_kwargs(model_id: str) -> Dict[str, Any]:
-    """Provider-specific extras (e.g. api_base for ollama)."""
+    """Provider-specific extras (api_base for ollama, proxy creds for litellm_proxy)."""
     provider = detect_provider(model_id)
     kw: Dict[str, Any] = {}
     if provider in ("ollama", "ollama_chat"):
         host = os.getenv("OLLAMA_HOST", "").strip().rstrip("/")
         if host:
             kw["api_base"] = host
+    elif provider == "litellm_proxy":
+        kw.update(_proxy_kwargs())
     return kw
 
 
@@ -249,12 +289,13 @@ def complete(
     if not api_messages:
         return {"text": "No text returned.", "thinking": ""}
 
+    routed = _route_via_proxy(normalized)
     kwargs: Dict[str, Any] = {
-        "model": normalized,
+        "model": routed,
         "messages": api_messages,
         "timeout": timeout,
         **_completion_kwargs(options),
-        **_provider_kwargs(normalized),
+        **_provider_kwargs(routed),
     }
     if _is_thinking_model(normalized):
         kwargs.setdefault("extra_body", {})["think"] = True
@@ -321,22 +362,25 @@ def complete_with_images(
     if added == 0:
         return {"text": "No valid image files provided.", "thinking": ""}
 
-    if not supports_vision(normalized):
+    routed = _route_via_proxy(normalized)
+    # Vision capability lookup is best-effort; proxy-routed ids may not be
+    # recognised by litellm's static table — skip the gate in that case.
+    if detect_provider(normalized) not in _proxy_provider_prefixes() and not supports_vision(normalized):
         return {
             "text": (
                 f"Model {normalized} does not support vision. "
                 "Set VISION_MODEL in .env to a vision-capable model "
-                "(e.g. ollama/qwen2.5vl:7b, openai/gpt-4o, gemini/gemini-2.0-flash)."
+                "(e.g. dev/gemini-2.5-flash, openai/gpt-4o, gemini/gemini-2.0-flash)."
             ),
             "thinking": "",
         }
 
     kwargs: Dict[str, Any] = {
-        "model": normalized,
+        "model": routed,
         "messages": [{"role": "user", "content": content}],
         "timeout": timeout,
         **_completion_kwargs(options),
-        **_provider_kwargs(normalized),
+        **_provider_kwargs(routed),
     }
     response = litellm.completion(**kwargs)
     text, reasoning = _extract_text(response)
@@ -347,15 +391,18 @@ _embed_dim_cache: Dict[str, int] = {}
 
 
 def embed(model_id: str, texts: List[str]) -> List[List[float]]:
-    """Embed a list of strings. Returns list of vectors."""
+    """Embed a list of strings. Returns list of vectors. Empty model id → []."""
+    if not (model_id or "").strip():
+        return []
     stripped = [t.strip() for t in (texts or []) if (t or "").strip()]
     if not stripped:
         return []
     normalized = normalize_model_id(model_id)
+    routed = _route_via_proxy(normalized)
     kwargs: Dict[str, Any] = {
-        "model": normalized,
+        "model": routed,
         "input": stripped,
-        **_provider_kwargs(normalized),
+        **_provider_kwargs(routed),
     }
     response = litellm.embedding(**kwargs)
     vecs: List[List[float]] = []
@@ -373,7 +420,9 @@ def embed(model_id: str, texts: List[str]) -> List[List[float]]:
 
 
 def embedding_dimension(model_id: str) -> Optional[int]:
-    """Probe embedding dimension once (cached) by embedding a single token."""
+    """Probe embedding dimension once (cached) by embedding a single token. Empty id → None."""
+    if not (model_id or "").strip():
+        return None
     normalized = normalize_model_id(model_id)
     if normalized in _embed_dim_cache:
         return _embed_dim_cache[normalized]

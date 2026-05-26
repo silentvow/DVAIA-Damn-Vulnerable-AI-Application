@@ -21,22 +21,38 @@ def _sanitize(s: str) -> str:
 
 
 def current_embedding_model() -> str:
-    """LiteLLM-canonical embedding model id (e.g. ollama/nomic-embed-text)."""
-    return litellm_client.normalize_model_id(get_embedding_model_id())
+    """
+    LiteLLM-canonical embedding model id (e.g. ollama/nomic-embed-text).
+    Empty string when RAG is disabled (EMBEDDING_MODEL=none / unset).
+    """
+    raw = get_embedding_model_id()
+    if not raw:
+        return ""
+    return litellm_client.normalize_model_id(raw)
+
+
+def rag_enabled() -> bool:
+    """True when an embedding model is configured."""
+    return bool(current_embedding_model())
 
 
 def current_embedding_dimension() -> Optional[int]:
     """Vector size of the current embedding model. Probed once on first use."""
-    return litellm_client.embedding_dimension(current_embedding_model())
+    model = current_embedding_model()
+    if not model:
+        return None
+    return litellm_client.embedding_dimension(model)
 
 
 def current_collection_name() -> str:
     """
     Qdrant collection for RAG chunks at the current embedding model.
     Format: rag_chunks__<provider>__<model>__<dim>.
-    Omits the dim suffix when probing failed (offline / model not ready).
+    Returns a 'disabled' sentinel when no embedding model is configured.
     """
     model_id = current_embedding_model()
+    if not model_id:
+        return "rag_chunks__disabled"
     provider = litellm_client.detect_provider(model_id)
     model_name = litellm_client.strip_provider(model_id)
     slug = _sanitize(f"{provider}__{model_name}")
@@ -48,22 +64,27 @@ def current_collection_name() -> str:
 
 def embed_text(text: str, llm_provider: Optional[str] = None) -> List[float]:
     """
-    Embed one string.
-    llm_provider param is accepted for back-compat but ignored — the embedding
-    model is configured globally and is independent of the chat provider.
+    Embed one string. Returns [] if RAG is disabled or text is empty.
+    llm_provider param is accepted for back-compat but ignored.
     """
     if not (text or "").strip():
         return []
-    vecs = litellm_client.embed(current_embedding_model(), [text.strip()])
+    model = current_embedding_model()
+    if not model:
+        return []
+    vecs = litellm_client.embed(model, [text.strip()])
     return vecs[0] if vecs else []
 
 
 def embed_texts(texts: List[str], llm_provider: Optional[str] = None) -> List[List[float]]:
-    """Embed multiple strings. llm_provider accepted for back-compat but ignored."""
+    """Embed multiple strings. Returns [] if RAG is disabled or input is empty."""
     stripped = [t.strip() for t in (texts or []) if (t or "").strip()]
     if not stripped:
         return []
-    return litellm_client.embed(current_embedding_model(), stripped)
+    model = current_embedding_model()
+    if not model:
+        return []
+    return litellm_client.embed(model, stripped)
 
 
 def clear_embeddings_cache() -> None:

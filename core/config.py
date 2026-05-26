@@ -227,9 +227,17 @@ def get_ollama_host() -> str:
 
 
 def get_embedding_model_id() -> str:
-    """Embedding model for RAG. Normalized to LiteLLM '<provider>/<model>' form."""
+    """
+    Embedding model for RAG. Normalized to LiteLLM '<provider>/<model>' form.
+    Returns empty string when EMBEDDING_MODEL is unset/blank or set to a
+    sentinel value ('none' / 'disabled' / 'off') — RAG indexing and retrieval
+    become no-ops in that case.
+    """
     _ensure_env_loaded()
-    return _normalize_model_id(os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL))
+    raw = (os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL) or "").strip()
+    if not raw or raw.lower() in ("none", "disabled", "off"):
+        return ""
+    return _normalize_model_id(raw)
 
 
 def get_openai_api_key() -> Optional[str]:

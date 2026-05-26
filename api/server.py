@@ -135,11 +135,13 @@ def _resolve_chat_model_id(data: dict) -> str:
 def api_models():
     """Default model ids and dynamic LiteLLM provider list with availability."""
     default_model = _default_model()
+    embedding_model = get_embedding_model_id()
     return jsonify({
         "default": default_model,
         "agentic_model": get_agentic_model_id(),
         "vision_model": get_vision_model_id(),
-        "embedding_model": get_embedding_model_id(),
+        "embedding_model": embedding_model,
+        "rag_enabled": bool(embedding_model),
         "whisper_model": get_whisper_model_name(),
         "transcription_backend": "whisper",
         "default_provider": detect_provider(default_model),
@@ -153,7 +155,7 @@ def api_models():
             "gemini/gemini-2.0-flash",
             "openai/gpt-4o-mini",
             "anthropic/claude-3-5-sonnet-20241022",
-            "groq/llama-3.1-70b-versatile",
+            "dev/gpt-5-mini",
         ],
     })
 

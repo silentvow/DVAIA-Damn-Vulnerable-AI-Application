@@ -20,6 +20,15 @@ from core.config import (
 # Curated default models per provider — used to seed the UI provider dropdown.
 # Override per provider with env var LITELLM_MODELS_<PROVIDER> (comma-separated).
 _DEFAULT_MODELS: Dict[str, List[str]] = {
+    # 'dev/...' is the team proxy namespace at LITELLM_PROXY_API_BASE.
+    "dev": [
+        "gpt-5-mini", "gpt-5-nano",
+        "claude-sonnet-4-6", "claude-haiku-4-5",
+        "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
+        "grok-4-fast-reasoning", "grok-4-fast-non-reasoning", "grok-4",
+        "mistral-large-2411", "mistral-medium-3.1-2508", "mistral-small-3.2-2506",
+        "ministral-8b-2512", "ministral-14b-2512", "ministral-3b-2512",
+    ],
     "openai":       ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "o1-mini"],
     "gemini":       ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
     "ollama":       ["llama3.2", "qwen3:0.6b", "qwen2.5vl:7b", "nomic-embed-text"],
@@ -27,7 +36,7 @@ _DEFAULT_MODELS: Dict[str, List[str]] = {
     "groq":         ["llama-3.1-70b-versatile", "llama-3.1-8b-instant"],
     "mistral":      ["mistral-large-latest", "mistral-small-latest"],
     "cohere":       ["command-r-plus", "command-r"],
-    "openrouter":   ["anthropic/claude-3.5-sonnet", "openai/gpt-4o"],
+    "openrouter":   ["gemma-3-12b-it", "gemma-3-4b-it", "anthropic/claude-3.5-sonnet"],
     "deepseek":     ["deepseek-chat", "deepseek-reasoner"],
     "together_ai":  ["meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"],
     "fireworks_ai": ["accounts/fireworks/models/llama-v3p1-70b-instruct"],
