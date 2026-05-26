@@ -166,7 +166,11 @@ def _is_thinking_model(model_id: str) -> bool:
 
 
 def _completion_kwargs(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Translate options dict to litellm.completion kwargs."""
+    """
+    Translate options dict to litellm.completion kwargs. Pre-filter only —
+    _filter_unsupported_params() then drops per-model unsupported keys before
+    the request leaves the client.
+    """
     out: Dict[str, Any] = {}
     if not options:
         return out
@@ -195,15 +199,40 @@ def _completion_kwargs(options: Optional[Dict[str, Any]] = None) -> Dict[str, An
             out["max_tokens"] = int(num)
         except (TypeError, ValueError):
             pass
-    rp = options.get("repeat_penalty")
-    if rp is not None:
-        # OpenAI-style frequency_penalty is [-2,2] where >0 discourages repeats.
-        # Ollama repeat_penalty is [0,inf) where >1 discourages. Convert roughly.
+    if options.get("repeat_penalty") is not None:
+        # Ollama-specific; passed through as-is. Stripped for non-ollama by filter.
         try:
-            out["frequency_penalty"] = max(-2.0, min(2.0, float(rp) - 1.0))
+            out["repeat_penalty"] = float(options["repeat_penalty"])
         except (TypeError, ValueError):
             pass
     return out
+
+
+# Model families that reject extra sampling knobs upstream. The team LiteLLM
+# proxy forwards requests verbatim, so client-side filtering is the only
+# reliable defense (proxy may not have litellm_settings.drop_params=True).
+_OPENAI_REASONING_PREFIXES = ("gpt-5", "o1-", "o3-", "o4-", "o1", "o3", "o4")
+
+
+def _is_openai_reasoning_model(model_id: str) -> bool:
+    """gpt-5 / o1 / o3 / o4 — these reject top_p, top_k, frequency/presence penalty."""
+    bare = strip_provider(model_id).lower()
+    return any(bare.startswith(p) for p in _OPENAI_REASONING_PREFIXES)
+
+
+def _filter_unsupported_params(kwargs: Dict[str, Any], model_id: str) -> Dict[str, Any]:
+    """Strip per-model sampling params the upstream is known to reject."""
+    provider = detect_provider(model_id)
+    if provider not in ("ollama", "ollama_chat"):
+        # repeat_penalty is Ollama-specific
+        kwargs.pop("repeat_penalty", None)
+    if _is_openai_reasoning_model(model_id):
+        for k in ("top_p", "top_k", "frequency_penalty", "presence_penalty"):
+            kwargs.pop(k, None)
+    elif provider == "openai":
+        # OpenAI chat completions don't accept top_k
+        kwargs.pop("top_k", None)
+    return kwargs
 
 
 def _provider_kwargs(model_id: str) -> Dict[str, Any]:
@@ -290,11 +319,12 @@ def complete(
         return {"text": "No text returned.", "thinking": ""}
 
     routed = _route_via_proxy(normalized)
+    sampling = _filter_unsupported_params(_completion_kwargs(options), normalized)
     kwargs: Dict[str, Any] = {
         "model": routed,
         "messages": api_messages,
         "timeout": timeout,
-        **_completion_kwargs(options),
+        **sampling,
         **_provider_kwargs(routed),
     }
     if _is_thinking_model(normalized):
@@ -375,11 +405,12 @@ def complete_with_images(
             "thinking": "",
         }
 
+    sampling = _filter_unsupported_params(_completion_kwargs(options), normalized)
     kwargs: Dict[str, Any] = {
         "model": routed,
         "messages": [{"role": "user", "content": content}],
         "timeout": timeout,
-        **_completion_kwargs(options),
+        **sampling,
         **_provider_kwargs(routed),
     }
     response = litellm.completion(**kwargs)
