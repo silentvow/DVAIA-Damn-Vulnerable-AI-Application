@@ -9,18 +9,12 @@ pyyaml
 PyPDF2
 python-docx
 pytesseract
-# LangChain core + LiteLLM unified adapter (replaces ollama/gemini/openai-specific clients)
+# LangChain core + LiteLLM unified adapter (chat / agent / embeddings)
 langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-community>=0.3.0
 litellm>=1.50.0
 langchain-litellm>=0.1.0
-# Kept as legacy deps; safe to remove once LiteLLM coverage is verified end-to-end
-langchain-ollama>=0.2.0
-langchain-google-genai>=2.0.0
-langchain-openai>=0.2.0
-google-genai>=1.0.0
-openai>=1.0.0
 qdrant-client
 # Payload generation
 reportlab

@@ -1,19 +1,17 @@
-# DVAIA: Docker setup — Ollama (optional) + Qdrant + Flask app
+# DVAIA: Docker setup — optional Ollama + Qdrant + Flask app
 #
-# IMPORTANT: Run ./run_docker.sh (not plain "docker compose up") for an interactive
-# setup that asks whether to use local Ollama models or cloud (Gemini / OpenAI),
-# with requirements and .env guidance for each option.
+# All LLM calls route through LiteLLM, so any provider works — just set its API
+# key in .env (OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, etc.) and
+# point DEFAULT_MODEL at a 'provider/model' id.
 #
-# Quick reference:
-#   ./run_docker.sh              Interactive prompt (recommended)
-#   ./run_docker.sh --local        Local Ollama + model downloads (~9–10 GB disk)
-#   ./run_docker.sh --gemini-only  Cloud Gemini (GOOGLE_API_KEY in .env)
-#   ./run_docker.sh --openai-only  Cloud OpenAI (OPENAI_API_KEY in .env)
-#   ./run_docker.sh --skip-prompt  Use GEMINI_ONLY / OPENAI_ONLY from .env; else local
+# Run helpers:
+#   ./run_docker.sh                Interactive (recommended)
+#   ./run_docker.sh --local        Local Ollama + model downloads (~9–10 GB)
+#   ./run_docker.sh --no-ollama    Cloud only — skip Ollama service / downloads
 #
-# Direct compose (no prompt):
-#   docker compose --profile ollama up --build   # local
-#   docker compose up --build                    # cloud-only if GEMINI_ONLY/OPENAI_ONLY in .env
+# Direct compose:
+#   docker compose --profile ollama up --build   # local Ollama
+#   docker compose up --build                    # cloud only (no Ollama service)
 services:
   ollama:
     profiles:
@@ -63,17 +61,17 @@ services:
       - .env
     environment:
       - PORT=${PORT:-5000}
-      - GEMINI_ONLY=${GEMINI_ONLY:-false}
-      - OPENAI_ONLY=${OPENAI_ONLY:-false}
       - RESET_DATA_ON_START=${RESET_DATA_ON_START:-false}
       # Overrides .env localhost — app container must reach the ollama service by name.
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
+      # Server-mode Qdrant inside Docker (overrides QDRANT_MODE=local in .env).
+      - QDRANT_MODE=server
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-ollama:llama3.2}
-      - VISION_MODEL=${VISION_MODEL:-ollama:qwen2.5vl:7b}
-      - AGENTIC_MODEL=${AGENTIC_MODEL:-qwen3:0.6b}
-      - EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-ollama}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-ollama/llama3.2}
+      - VISION_MODEL=${VISION_MODEL:-ollama/qwen2.5vl:7b}
+      - AGENTIC_MODEL=${AGENTIC_MODEL:-ollama/qwen3:0.6b}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-ollama/nomic-embed-text}
       - WHISPER_MODEL=${WHISPER_MODEL:-base}
       - DATABASE_URI=${DATABASE_URI:-data/app.db}
       - UPLOAD_DIR=${UPLOAD_DIR:-data/uploads}

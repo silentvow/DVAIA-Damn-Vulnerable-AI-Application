@@ -13,7 +13,7 @@ DVAIA is similar to DVWA (Damn Vulnerable Web Application) but designed specific
 **What is DVAIA?**
 - Web UI for **manual exploration** of LLM vulnerabilities
 - Runs on **http://127.0.0.1:5000** (Flask app)
-- **Local (Ollama)**, **Cloud (Gemini)**, or **Cloud (OpenAI)** — Settings backend toggle; cloud-only Docker modes skip Ollama entirely
+- **Any LiteLLM provider** — OpenAI, Gemini, Ollama, Anthropic, Bedrock, Vertex, Groq, OpenRouter, etc. Pick provider + model in Settings; cloud-only Docker mode skips Ollama entirely
 - Educational platform for understanding LLM attack vectors
 - 8 attack panels + **Settings** (backend toggle, lab data reset, cache control)
 
@@ -30,23 +30,19 @@ The easiest way to run DVAIA with all dependencies:
 git clone https://github.com/airtasystems/DVAIA-Damn-Vulnerable-AI-Application.git
 cd DVAIA-Damn-Vulnerable-AI-Application
 
-# Configure environment (required for Gemini-only; optional for Ollama)
+# Configure environment (set API keys for cloud providers; optional for Ollama)
 cp .env.example .env
 
 # Option A: Full stack — Ollama + Qdrant + app (interactive setup on first run)
 ./run_docker.sh
-# Prompts: local Ollama vs cloud (Gemini/OpenAI), with disk/RAM and .env requirements
+# Prompts: local Ollama vs cloud-only, with disk/RAM and .env requirements
 
-# Option A2: Gemini-only — no Ollama (set GOOGLE_API_KEY in .env first)
-./run_docker.sh --gemini-only
-
-# Option A3: OpenAI-only — no Ollama (set OPENAI_API_KEY in .env first)
-./run_docker.sh --openai-only
-# or set OPENAI_ONLY=true in .env and run ./run_docker.sh
+# Option A2: Cloud only — no Ollama (set any provider API key in .env first)
+./run_docker.sh --no-ollama
 
 # Option B: docker compose directly
 docker compose --profile ollama up --build    # with Ollama
-docker compose up --build                     # cloud-only (GEMINI_ONLY or OPENAI_ONLY in .env)
+docker compose up --build                     # cloud only (no Ollama service)
 
 # With Ollama: models auto-download on first start
 # (llama3.2, nomic-embed-text, qwen3:0.6b, qwen2.5vl:7b — several minutes, ~10GB+ total)
@@ -58,8 +54,7 @@ docker compose --profile ollama logs -f ollama
 | Mode | Command | Ollama container | Local LLM downloads |
 |------|---------|------------------|---------------------|
 | **Full stack** | `./run_docker.sh` | Yes | Yes (on first start) |
-| **Gemini-only** | `./run_docker.sh --gemini-only` | No | No |
-| **OpenAI-only** | `./run_docker.sh --openai-only` | No | No |
+| **Cloud only** | `./run_docker.sh --no-ollama` | No | No |
 
 Whisper (audio STT) and OCR still run locally in the app container in both modes.
 
@@ -106,7 +101,10 @@ python -m api
 # Access at http://127.0.0.1:5000
 ```
 
-**Gemini-only (no Ollama):** set `GOOGLE_API_KEY`, `GEMINI_ONLY=true`, and Gemini model vars in `.env`, start Qdrant + `python -m api`, then use **Cloud (Gemini)** in the UI (or let `GEMINI_ONLY` default the provider).
+**Cloud only (no Ollama):** set any LiteLLM provider API key in `.env`
+(`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, …) plus the matching
+`DEFAULT_MODEL` (e.g. `openai/gpt-4o-mini`), then `./run_docker.sh --no-ollama`
+or start Qdrant + `python -m api` directly.
 
 **For production deployment:**
 
@@ -117,109 +115,121 @@ gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 120 api.server:app
 
 ---
 
-## 🔧 Using local (Ollama) or cloud (Gemini / OpenAI) models
+## 🔧 LLM provider configuration
 
-### Model configuration
-
-DVAIA defaults to **Ollama** for LLM calls and embeddings. Use **Google Gemini** or **OpenAI** when you lack local GPU/RAM or prefer cloud speed — choose the backend in **Settings**, or run a **cloud-only Docker** mode to skip Ollama entirely.
+DVAIA routes every chat, vision, agentic, and embedding call through
+[LiteLLM](https://docs.litellm.ai/docs/providers), so any provider it ships with
+is available — OpenAI, Gemini, Ollama, Anthropic, Bedrock, Vertex, Groq,
+OpenRouter, Mistral, Cohere, DeepSeek, Together, Fireworks, Perplexity, etc.
 
 Whisper transcription and OCR always run locally regardless of the LLM backend.
 
-### Gemini cloud backend
+### Picking a provider
 
-Get an API key from [Google AI Studio](https://aistudio.google.com/apikey), then add to `.env`:
+1. Add the provider's API key to `.env` (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+   `ANTHROPIC_API_KEY`).
+2. Point `DEFAULT_MODEL` at the model in LiteLLM canonical form
+   `provider/model` — e.g. `openai/gpt-4o-mini`, `anthropic/claude-3-5-sonnet-20241022`,
+   `gemini/gemini-2.0-flash`, `ollama/llama3.2`. Legacy `provider:model`
+   syntax is auto-converted.
+3. Optionally override the per-role model: `VISION_MODEL`, `AGENTIC_MODEL`,
+   `EMBEDDING_MODEL`. Each can target a different provider.
+
+The **Settings → Model** dropdown lists every provider with detected
+credentials plus a curated model catalog. Pick a model or paste a custom
+`provider/model` id. Override the dropdown per provider with
+`LITELLM_MODELS_<PROVIDER>` (comma-separated).
+
+Example cloud `.env` configurations:
 
 ```bash
-GOOGLE_API_KEY=your-key-here
-GEMINI_CHAT_MODEL=gemini-3-flash-preview
-GEMINI_VISION_MODEL=gemini-3-flash-preview
-GEMINI_AGENTIC_MODEL=gemini-3-flash-preview
-EMBEDDING_BACKEND=gemini          # required for RAG when using Gemini embeddings
-EMBEDDING_MODEL_GEMINI=text-embedding-004
-```
-
-### OpenAI cloud backend
-
-Get an API key from [OpenAI](https://platform.openai.com/api-keys), then add to `.env`:
-
-```bash
+# OpenAI
 OPENAI_API_KEY=your-key-here
-OPENAI_CHAT_MODEL=gpt-4o-mini
-OPENAI_VISION_MODEL=gpt-4o
-OPENAI_AGENTIC_MODEL=gpt-4o-mini
-EMBEDDING_BACKEND=openai           # required for RAG when using OpenAI embeddings
-EMBEDDING_MODEL_OPENAI=text-embedding-3-small
+DEFAULT_MODEL=openai/gpt-4o-mini
+VISION_MODEL=openai/gpt-4o
+EMBEDDING_MODEL=openai/text-embedding-3-small
+
+# Gemini (also accepts GOOGLE_API_KEY)
+GEMINI_API_KEY=your-key-here
+DEFAULT_MODEL=gemini/gemini-2.0-flash
+VISION_MODEL=gemini/gemini-2.0-flash
+
+# Anthropic
+ANTHROPIC_API_KEY=your-key-here
+DEFAULT_MODEL=anthropic/claude-3-5-sonnet-20241022
 ```
 
-Use the **Backend** option in **Settings** (sidebar). Model IDs use prefixes: `ollama:llama3.2`, `gemini:gemini-3-flash-preview`, or `openai:gpt-4o-mini`. When switching RAG embedding backends, re-add documents — Ollama uses `rag_chunks`, Gemini uses `rag_chunks_gemini`, OpenAI uses `rag_chunks_openai` (unless `QDRANT_COLLECTION` is set explicitly).
+When you change `EMBEDDING_MODEL`, RAG creates a new Qdrant collection named
+`rag_chunks__<provider>__<model>__<dim>` automatically — different embedding
+models never share a collection. Re-index documents after switching if you
+want them queryable under the new model.
 
-### Cloud-only mode (Docker)
+### Cloud-only Docker (no Ollama)
 
 For machines that cannot run local LLMs (~10GB+ downloads):
 
-**Gemini-only:**
-
 ```bash
 cp .env.example .env
-# Edit .env: GOOGLE_API_KEY, GEMINI_ONLY=true, EMBEDDING_BACKEND=gemini, GEMINI_*_MODEL vars
+# Edit .env: pick provider API key(s) and DEFAULT_MODEL, e.g.
+#   OPENAI_API_KEY=...
+#   DEFAULT_MODEL=openai/gpt-4o-mini
+#   EMBEDDING_MODEL=openai/text-embedding-3-small
 
-./run_docker.sh --gemini-only
+./run_docker.sh --no-ollama
 ```
 
-**OpenAI-only:**
+This starts **Qdrant + DVAIA only** — no Ollama container, no `ollama pull`.
+Whisper/OCR still run in the app container for audio/image extract mode.
 
-```bash
-cp .env.example .env
-# Edit .env: OPENAI_API_KEY, OPENAI_ONLY=true, EMBEDDING_BACKEND=openai, OPENAI_*_MODEL vars
+### Default model (main panels)
 
-./run_docker.sh --openai-only
-```
-
-This starts **Qdrant + DVAIA only** — no Ollama container, no `ollama pull`. The UI locks to the selected cloud backend. Whisper/OCR still run in the app container for audio/image extract mode.
-
-### Default model (main panels — Ollama)
-
-The **Direct Injection**, **Document Injection**, **Web Injection**, **RAG**, and **Template Injection** panels use the same default model when **Local (Ollama)** is selected. Set it in `.env`:
+The **Direct Injection**, **Document Injection**, **Web Injection**, **RAG**, and **Template Injection** panels share `DEFAULT_MODEL`. Set it in `.env` to any LiteLLM `provider/model` id:
 
 ```bash
 # .env
-DEFAULT_MODEL=ollama:llama3.2
+DEFAULT_MODEL=ollama/llama3.2              # local Ollama
+# DEFAULT_MODEL=openai/gpt-4o-mini         # OpenAI
+# DEFAULT_MODEL=gemini/gemini-2.0-flash    # Google Gemini
+# DEFAULT_MODEL=anthropic/claude-3-5-sonnet-20241022
 ```
 
-Use the Ollama model name with or without the `ollama:` prefix (e.g. `llama3.2`, `ollama:mistral`, `qwen2.5:7b`). Pull the model first:
+Legacy `provider:model` ids (e.g. `ollama:llama3.2`) are accepted and converted automatically. For Ollama models, pull the weight first:
 
 ```bash
 ollama pull llama3.2
-ollama pull mistral
 ollama pull qwen2.5:7b
 ```
 
 ### Agentic panel (thinking model)
 
-The **Agentic** panel uses a separate model so you can choose a **thinking model** (one that supports Ollama’s `think` parameter for CoT). Set it in `.env`:
+The **Agentic** panel uses a separate model so you can pick a **thinking model**. Set it in `.env`:
 
 ```bash
 # .env
-AGENTIC_MODEL=qwen3:0.6b
+AGENTIC_MODEL=ollama/qwen3:0.6b
 ```
 
-Suggested models that support thinking/CoT:
+Suggested thinking models:
 
-- **qwen3:0.6b** (default) – small, fast thinking model
-- **deepseek-r1:8b** – reasoning model
+- **ollama/qwen3:0.6b** (default) – small, fast
+- **ollama/deepseek-r1:8b** – reasoning model
+- **openai/o1-mini** – OpenAI reasoning
+- **anthropic/claude-3-5-sonnet-20241022** – Anthropic with tool use
 
-Pull the model, then set `AGENTIC_MODEL` to that name. The UI and `/api/models` reflect the current value.
+DVAIA auto-applies Ollama's `think` parameter for `qwen3*` and `deepseek-r1*` models so the chain-of-thought trace appears in the side panel.
 
 ### Document Injection vision model
 
-**Document Injection** can send **image files directly** to a vision-language model (pixels, not OCR text). Enable **Send images to vision model** in the UI when an image is selected. Configure in `.env`:
+**Document Injection** can send **image files directly** to a vision-language model (pixels, not OCR text). Configure in `.env`:
 
 ```bash
 # .env
-VISION_MODEL=ollama:qwen2.5vl:7b
+VISION_MODEL=ollama/qwen2.5vl:7b
+# VISION_MODEL=openai/gpt-4o
+# VISION_MODEL=gemini/gemini-2.0-flash
 ```
 
-Docker Compose (Ollama profile) auto-pulls `qwen2.5vl:7b` on first start (~6GB). Not used in Gemini-only mode.
+Docker Compose (Ollama profile) auto-pulls `qwen2.5vl:7b` on first start (~6GB). For cloud providers, no download is needed.
 
 | Mode | File types | Pipeline |
 |------|------------|----------|
@@ -244,32 +254,52 @@ The Docker image pre-downloads the `base` model (~150MB). First transcription ou
 
 ### RAG embeddings
 
-**Ollama (default):** uses `nomic-embed-text`. Override in `.env`:
+A single `EMBEDDING_MODEL` is used for indexing and retrieval — independent of the
+chat provider. Pick any LiteLLM-supported embedding model:
 
 ```bash
-EMBEDDING_BACKEND=ollama
-EMBEDDING_MODEL=nomic-embed-text
-ollama pull nomic-embed-text
+EMBEDDING_MODEL=ollama/nomic-embed-text          # default; ollama pull nomic-embed-text
+# EMBEDDING_MODEL=openai/text-embedding-3-small
+# EMBEDDING_MODEL=gemini/text-embedding-004
+# EMBEDDING_MODEL=cohere/embed-english-v3.0
 ```
 
-**Gemini:** set `EMBEDDING_BACKEND=gemini` and use the Cloud toggle (or `GEMINI_ONLY=true`). Re-index documents after switching backends.
+The Qdrant collection name is derived from the model id and probed vector
+dimension (`rag_chunks__<provider>__<model>__<dim>`), so swapping embedding
+models can never mix vectors of different sizes into one collection. Re-index
+documents after switching if you want them queryable under the new model.
+
+### Qdrant: local (no Docker) vs server
+
+By default DVAIA runs Qdrant in **local (embedded)** mode — no Docker container
+required. Data persists to `data/qdrant/`. Override with `QDRANT_MODE`:
+
+```bash
+QDRANT_MODE=local        # embedded in-process (default; no Docker needed)
+QDRANT_PATH=data/qdrant  # storage path for local mode
+
+# QDRANT_MODE=server     # external Qdrant service
+# QDRANT_URL=http://localhost:6333
+```
+
+When `QDRANT_URL` or `QDRANT_HOST` is set, server mode is selected automatically.
+Docker Compose always runs Qdrant as a service and overrides this.
 
 ### Summary
 
-| Use case              | Env variable     | Default (Ollama)  |
-|-----------------------|------------------|-------------------|
-| Chat (all main panels)| `DEFAULT_MODEL`  | `ollama:llama3.2` |
-| Agentic (tools + CoT) | `AGENTIC_MODEL`  | `qwen3:0.6b`      |
-| Document Injection vision (images) | `VISION_MODEL` | `ollama:qwen2.5vl:7b` |
-| Document Injection audio (STT) | `WHISPER_MODEL` | `base` |
-| RAG embeddings (Ollama) | `EMBEDDING_MODEL`| `nomic-embed-text`|
-| RAG embeddings (Gemini) | `EMBEDDING_MODEL_GEMINI` | `text-embedding-004` |
-| RAG embeddings (OpenAI) | `EMBEDDING_MODEL_OPENAI` | `text-embedding-3-small` |
-| Gemini chat/vision/agentic | `GEMINI_*_MODEL` | see `.env.example` |
-| OpenAI chat/vision/agentic | `OPENAI_*_MODEL` | see `.env.example` |
-| Gemini API key        | `GOOGLE_API_KEY` | (unset)           |
-| OpenAI API key        | `OPENAI_API_KEY` | (unset)           |
-| Skip Ollama in Docker | `GEMINI_ONLY` / `OPENAI_ONLY` | `false`           |
+| Use case              | Env variable     | Default value                 |
+|-----------------------|------------------|-------------------------------|
+| Chat (all main panels)| `DEFAULT_MODEL`  | `ollama/llama3.2`             |
+| Agentic (tools + CoT) | `AGENTIC_MODEL`  | `ollama/qwen3:0.6b`           |
+| Vision (images)       | `VISION_MODEL`   | `ollama/qwen2.5vl:7b`         |
+| RAG embeddings        | `EMBEDDING_MODEL`| `ollama/nomic-embed-text`     |
+| Audio transcription   | `WHISPER_MODEL`  | `base` (always local)         |
+| OpenAI API key        | `OPENAI_API_KEY` | (unset)                       |
+| Gemini API key        | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | (unset)    |
+| Anthropic API key     | `ANTHROPIC_API_KEY` | (unset)                    |
+| Per-provider model dropdown | `LITELLM_MODELS_<PROVIDER>` | curated list |
+| Qdrant mode           | `QDRANT_MODE`    | `local` (or `server` if URL set) |
+| Qdrant local path     | `QDRANT_PATH`    | `data/qdrant`                 |
 
 Copy `.env.example` to `.env`, uncomment and set the variables you want. Restart the app after changing `.env`. **Never commit `.env`** — it is gitignored; GitHub push protection blocks commits that contain API keys.
 
@@ -476,7 +506,7 @@ ReAct-style agent with **6 SQLite-backed tools** (read + dangerous-by-design) fo
 
 **Use case:** Test agent/tool-use security (prompt injection to misuse tools, data exfiltration, multi-turn jailbreaks). CoT visibility helps explain model decisions.
 
-**Docker (Ollama profile):** auto-pulls **qwen3:0.6b** on first start. Override with **AGENTIC_MODEL** in `.env` (see [model configuration](#model-configuration) above). Gemini-only mode uses **GEMINI_AGENTIC_MODEL** instead.
+**Docker (Ollama profile):** auto-pulls **qwen3:0.6b** on first start. Override with **AGENTIC_MODEL** in `.env` to any LiteLLM-supported model (cloud or local) — e.g. `openai/o1-mini` or `anthropic/claude-3-5-sonnet-20241022`.
 
 ---
 
@@ -805,12 +835,12 @@ Open **Settings** in the sidebar for runtime options that do not require editing
 
 | Control | Purpose |
 |---------|---------|
-| **Backend** | Local (Ollama), Cloud (Gemini), or Cloud (OpenAI) — applies to chat, vision, agentic tools, and RAG embeddings for the session |
+| **Model** | Provider + model picker — any LiteLLM provider with an env-detected API key shows up. Pick from the curated list or paste a custom `provider/model` id |
 | **Clear document store and RAG on each app start** | Maps to `RESET_DATA_ON_START` — wipes SQLite, uploads, and Qdrant on boot (restart container to apply) |
 | **Clear all lab data** | Removes uploaded documents, generated payload files, and all RAG collections — **empties document dropdowns** |
 | **Clear RAG index only** | Deletes Qdrant vectors only; uploads and payload files **remain** in dropdowns |
 | **Clear uploads only** | Deletes SQLite document rows and upload files; RAG vectors unchanged |
-| **Clear Gemini / OpenAI cache** | Resets cloud SDK clients after API key changes |
+| **Clear LLM cache** | Resets LiteLLM internal caches (embedding dim probe etc.) after model / API key changes |
 
 **RAG vs document lists:** Document and RAG panels share a dropdown of **uploads** + **generated payloads**. That list is **not** the vector index. If “Clear RAG index” seems to do nothing in the UI, use **Clear all lab data** or delete uploads separately.
 
@@ -827,17 +857,19 @@ cp .env.example .env
 | Variable | Purpose |
 |----------|---------|
 | `PORT` | Flask listen port (default `5000`) |
-| `GEMINI_ONLY` | Docker: skip Ollama container and local LLM downloads |
-| `GOOGLE_API_KEY` | Enables Cloud (Gemini) backend |
-| `OPENAI_API_KEY` | Enables Cloud (OpenAI) backend |
-| `DEFAULT_MODEL` | Chat model for main panels |
-| `AGENTIC_MODEL` | Agentic panel model |
-| `VISION_MODEL` | Document Injection vision mode |
-| `WHISPER_MODEL` | Local audio transcription |
-| `EMBEDDING_BACKEND` | RAG embeddings: `ollama`, `gemini`, or `openai` |
-| `OPENAI_ONLY` | Docker: skip Ollama; requires `OPENAI_API_KEY` |
+| `DEFAULT_MODEL` | Chat model id (LiteLLM `provider/model` form) for main panels |
+| `AGENTIC_MODEL` | Agentic / thinking model id |
+| `VISION_MODEL` | Document Injection vision mode model id |
+| `EMBEDDING_MODEL` | RAG embedding model id |
+| `WHISPER_MODEL` | Local audio transcription model (always local) |
+| `OPENAI_API_KEY` | Enables OpenAI provider |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Enables Gemini provider |
+| `ANTHROPIC_API_KEY` | Enables Anthropic provider (any other LiteLLM key works too) |
+| `LITELLM_MODELS_<PROVIDER>` | Comma-separated override for the Settings model dropdown |
 | `OLLAMA_HOST` | Ollama URL when app runs **on the host** (`http://localhost:11480`). `./run_docker.sh` forces `http://ollama:11434` inside Docker — do not rely on localhost there |
-| `QDRANT_URL` | Qdrant URL (Docker sets `QDRANT_HOST=qdrant` internally) |
+| `QDRANT_MODE` | `local` (embedded, no Docker required; default) or `server` |
+| `QDRANT_PATH` | Local-mode storage path (default `data/qdrant`) |
+| `QDRANT_URL` | Qdrant server URL (only used when `QDRANT_MODE=server`) |
 | `RESET_DATA_ON_START` | Wipe document DB, uploads, and RAG on each worker start |
 | `DATABASE_URI` / `UPLOAD_DIR` | Persist lab data under `data/` (recommended); `/tmp` paths lose data on container recreate |
 | `PAYLOADS_OUTPUT_DIR` | Generated payload output (default `data/payloads/generate`) |
@@ -850,9 +882,9 @@ cp .env.example .env
 ./run_docker.sh
 docker compose --profile ollama up --build
 
-# Gemini-only — no Ollama, requires GOOGLE_API_KEY in .env
-./run_docker.sh --gemini-only
-docker compose up --build   # with GEMINI_ONLY=true in .env
+# Cloud only — no Ollama, requires a provider API key in .env
+./run_docker.sh --no-ollama
+docker compose up --build   # bare compose, no ollama profile
 ```
 
 For AWS/production deployment details, see [`AWS_DEPLOY.md`](AWS_DEPLOY.md).
@@ -1003,17 +1035,17 @@ docker compose up qdrant
 - Check Ollama is running: `docker compose --profile ollama ps`
 - **Inside Docker:** app must use `http://ollama:11434` (set automatically by `run_docker.sh`). `OLLAMA_HOST=http://localhost:11480` in `.env` is for **host-native** runs only and causes `Connection refused` from the container
 - **On the host:** use `http://localhost:11480` (Compose maps container `11434` → host `11480`)
-- If using cloud-only mode, select **Cloud (Gemini)** or **Cloud (OpenAI)** (Local is disabled when `GEMINI_ONLY` / `OPENAI_ONLY` is true)
+- If you started with `--no-ollama`, point `DEFAULT_MODEL` at a cloud provider (e.g. `openai/gpt-4o-mini`) instead of `ollama/*`
 
 **"Git push rejected — secrets in commit"**
 - Remove `.env` from git history if it was committed; rotate exposed API keys
 - Keep secrets in `.env` only (gitignored); use `.env.example` for templates
 - Never `git add -f .env`
 
-**"Gemini not configured" / empty responses**
-- Set `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `.env` and restart
-- For Docker gemini-only: `./run_docker.sh --gemini-only` requires the key at startup
-- Check model names in `.env` match models available to your API key
+**"Provider has no credentials" / empty responses**
+- Set the matching API key in `.env` (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) and restart
+- Make sure `DEFAULT_MODEL` (and `VISION_MODEL` / `AGENTIC_MODEL` / `EMBEDDING_MODEL` if used) targets a provider whose key is set
+- Check the model name matches one available to your API key
 
 **"Ollama model not found"**
 ```bash

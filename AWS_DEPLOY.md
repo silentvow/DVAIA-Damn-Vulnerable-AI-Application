@@ -189,8 +189,8 @@ nano .env
 ```bash
 # Application
 PORT=5000
-DEFAULT_MODEL=ollama:llama3.2
-EMBEDDING_BACKEND=ollama
+DEFAULT_MODEL=ollama/llama3.2
+EMBEDDING_MODEL=ollama/nomic-embed-text
 
 # Security - CHANGE THIS!
 SECRET_KEY=$(openssl rand -hex 32)
@@ -201,22 +201,25 @@ SECRET_KEY=$(openssl rand -hex 32)
 # UPLOAD_DIR=/tmp/uploads
 ```
 
-**Gemini-only `.env` (no Ollama required for LLM/RAG; Whisper still local):**
+**Cloud-only `.env` (no Ollama required for LLM/RAG; Whisper still local):**
 
 ```bash
 PORT=5000
-GEMINI_ONLY=true
-GOOGLE_API_KEY=your-google-ai-studio-key
-GEMINI_CHAT_MODEL=gemini-2.0-flash
-GEMINI_VISION_MODEL=gemini-2.0-flash
-GEMINI_AGENTIC_MODEL=gemini-2.0-flash
-EMBEDDING_BACKEND=gemini
+# Pick any LiteLLM provider — example with Gemini:
+GEMINI_API_KEY=your-google-ai-studio-key
+DEFAULT_MODEL=gemini/gemini-2.0-flash
+VISION_MODEL=gemini/gemini-2.0-flash
+AGENTIC_MODEL=gemini/gemini-2.0-flash
+EMBEDDING_MODEL=gemini/text-embedding-004
 SECRET_KEY=$(openssl rand -hex 32)
+
+# Or use OpenAI / Anthropic / Bedrock / Groq / OpenRouter — set the
+# matching *_API_KEY and point DEFAULT_MODEL at provider/model.
 ```
 
-Start without Ollama: `./run_docker.sh --gemini-only` or `docker compose up -d --build` (no `--profile ollama`).
+Start without Ollama: `./run_docker.sh --no-ollama` or `docker compose up -d --build` (no `--profile ollama`).
 
-Use the **Cloud (Gemini)** toggle in the UI header after setting `GOOGLE_API_KEY`.
+Pick the matching provider/model in **Settings → Model** after the app starts.
 
 **Important Notes:**
 - The `SECRET_KEY` should be unique for each deployment
@@ -234,11 +237,11 @@ Save and exit: `Ctrl+X`, `Y`, `Enter`
 # or: docker compose --profile ollama up -d --build
 ```
 
-**Gemini-only (no Ollama / no model downloads):**
+**Cloud only (no Ollama / no model downloads):**
 
 ```bash
-./run_docker.sh --gemini-only
-# or: docker compose up -d --build   # with GEMINI_ONLY=true in .env
+./run_docker.sh --no-ollama
+# or: docker compose up -d --build   # bare compose, no ollama profile
 ```
 
 With Ollama profile, startup will:
@@ -251,7 +254,7 @@ With Ollama profile, startup will:
 ### Monitor Startup Progress
 
 ```bash
-# Watch Ollama downloading models (Ollama profile only — skip if using --gemini-only)
+# Watch Ollama downloading models (Ollama profile only — skip if using --no-ollama)
 docker compose --profile ollama logs -f ollama
 
 # You'll see:

@@ -1,25 +1,24 @@
 #!/bin/bash
 # DVAIA - Damn Vulnerable AI Application
-# Docker Compose wrapper: Ollama + Qdrant + Flask (or cloud-only without Ollama)
+# Docker Compose wrapper: Flask app + Qdrant, with optional Ollama.
+#
+# All LLM calls route through LiteLLM, so any provider works once its API key
+# is in .env. The Ollama service is only needed for local model inference.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
-GEMINI_ONLY_FLAG=false
-OPENAI_ONLY_FLAG=false
 LOCAL_FLAG=false
+NO_OLLAMA_FLAG=false
 SKIP_PROMPT=false
 
 for arg in "$@"; do
   case "$arg" in
-    --gemini-only|--gemini)
-      GEMINI_ONLY_FLAG=true
-      ;;
-    --openai-only|--openai)
-      OPENAI_ONLY_FLAG=true
-      ;;
     --local|--ollama)
       LOCAL_FLAG=true
+      ;;
+    --no-ollama|--cloud)
+      NO_OLLAMA_FLAG=true
       ;;
     --skip-prompt|--yes|-y)
       SKIP_PROMPT=true
@@ -27,18 +26,17 @@ for arg in "$@"; do
     -h|--help)
       echo "Usage: $0 [OPTIONS] [docker compose args...]"
       echo ""
-      echo "Interactive setup runs when no mode is set in .env and stdin is a TTY."
+      echo "Interactive setup runs when no mode flag is set and stdin is a TTY."
       echo "Use ./run_docker.sh instead of 'docker compose up' directly."
       echo ""
       echo "Options:"
-      echo "  (default)       Prompt for local vs cloud, or use .env (GEMINI_ONLY / OPENAI_ONLY)"
-      echo "  --local         Local Ollama stack (skip prompt)"
-      echo "  --gemini-only   Cloud Gemini — no Ollama, no model downloads"
-      echo "  --openai-only   Cloud OpenAI — no Ollama, no model downloads"
-      echo "  --skip-prompt   Use .env flags only; default to local if unset"
+      echo "  (default)       Prompt for local Ollama vs cloud-only"
+      echo "  --local         Local Ollama stack (~9–10 GB model downloads)"
+      echo "  --no-ollama     Skip Ollama service — cloud providers via API keys"
+      echo "  --skip-prompt   Default to local Ollama; no prompt"
       echo "  -y, --yes       Same as --skip-prompt"
       echo ""
-      echo "Cloud modes require API keys in .env. See .env.example."
+      echo "Cloud providers require API keys in .env. See .env.example."
       echo "Set DVAIA_SKIP_MODE_PROMPT=1 to always skip the interactive prompt."
       exit 0
       ;;
@@ -63,7 +61,7 @@ ensure_env_file() {
     copy_env="${copy_env:-Y}"
     if [[ "$copy_env" =~ ^[Yy]$ ]]; then
       cp .env.example .env
-      echo "Created .env — edit it to add API keys before using cloud mode."
+      echo "Created .env — edit it to add API keys for cloud providers."
       return 0
     fi
   fi
@@ -77,7 +75,7 @@ print_local_info() {
   LOCAL (Ollama) — full stack with on-device LLMs
 
   What you need:
-    • Copy .env.example to .env (optional; no API keys required)
+    • Copy .env.example to .env (no API keys required for Ollama)
     • Docker with Compose v2
     • Disk: ~9–10 GB for Ollama models on first start
     • RAM: 8–16 GB recommended for CPU inference
@@ -89,45 +87,26 @@ print_local_info() {
     • qwen2.5vl:7b      (~6 GB)   — Document Injection vision
 
   First startup can take several minutes while models download.
-  After startup, use Settings → Backend → Local (Ollama) in the UI.
-  Whisper (audio) and OCR still run locally in the app container.
+  After startup, pick a model in Settings (defaults to ollama/llama3.2).
 EOF
 }
 
-print_gemini_info() {
+print_cloud_info() {
   cat <<'EOF'
 
-  CLOUD (Gemini) — no Ollama container, no local LLM downloads
+  CLOUD — no Ollama container, no local LLM downloads
 
-  What you need in .env:
-    • GOOGLE_API_KEY          — https://aistudio.google.com/apikey
-    • GEMINI_ONLY=true
-    • EMBEDDING_BACKEND=gemini
-    • GEMINI_CHAT_MODEL, GEMINI_VISION_MODEL, GEMINI_AGENTIC_MODEL
-    • EMBEDDING_MODEL_GEMINI=text-embedding-004  (RAG)
+  Set whichever provider keys you want in .env:
+    • OPENAI_API_KEY      — https://platform.openai.com/api-keys
+    • GEMINI_API_KEY      — https://aistudio.google.com/apikey
+    • ANTHROPIC_API_KEY   — https://console.anthropic.com/settings/keys
+    • GROQ_API_KEY, OPENROUTER_API_KEY, ... (any LiteLLM provider)
 
-  Optional: DEFAULT_MODEL=gemini:… to match chat model.
-  After startup, use Settings → Backend → Cloud (Gemini).
-  Re-index RAG documents (collection rag_chunks_gemini vs rag_chunks).
-  Whisper/OCR still run locally in the app container.
-EOF
-}
+  Then point DEFAULT_MODEL at a 'provider/model' id, e.g.
+    DEFAULT_MODEL=openai/gpt-4o-mini
+    EMBEDDING_MODEL=openai/text-embedding-3-small
 
-print_openai_info() {
-  cat <<'EOF'
-
-  CLOUD (OpenAI) — no Ollama container, no local LLM downloads
-
-  What you need in .env:
-    • OPENAI_API_KEY          — https://platform.openai.com/api-keys
-    • OPENAI_ONLY=true
-    • EMBEDDING_BACKEND=openai
-    • OPENAI_CHAT_MODEL, OPENAI_VISION_MODEL, OPENAI_AGENTIC_MODEL
-    • EMBEDDING_MODEL_OPENAI=text-embedding-3-small  (RAG)
-
-  Optional: DEFAULT_MODEL=openai:gpt-4o-mini
-  After startup, use Settings → Backend → Cloud (OpenAI).
-  Re-index RAG documents (collection rag_chunks_openai vs rag_chunks).
+  After startup, pick the provider/model in Settings.
   Whisper/OCR still run locally in the app container.
 EOF
 }
@@ -135,19 +114,18 @@ EOF
 prompt_for_mode() {
   echo ""
   echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║           DVAIA — choose LLM backend for Docker              ║"
+  echo "║           DVAIA — choose how to run LLMs in Docker           ║"
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo ""
   echo "  1) Local (Ollama)     — download and run models in Docker"
-  echo "  2) Cloud (Gemini)     — Google API; skip Ollama entirely"
-  echo "  3) Cloud (OpenAI)     — OpenAI API; skip Ollama entirely"
+  echo "  2) Cloud only         — skip Ollama; use API keys for any provider"
   echo ""
-  echo "  h) Show requirements for a option before choosing"
+  echo "  h) Show requirements for an option before choosing"
   echo "  q) Quit"
   echo ""
 
   while true; do
-    read -r -p "Enter choice [1/2/3] (default: 1): " choice
+    read -r -p "Enter choice [1/2] (default: 1): " choice
     choice="${choice:-1}"
     case "$choice" in
       1)
@@ -160,32 +138,22 @@ prompt_for_mode() {
         fi
         ;;
       2)
-        print_gemini_info
-        read -r -p "Start with Cloud (Gemini)? [Y/n]: " confirm
+        print_cloud_info
+        read -r -p "Start cloud-only (no Ollama)? [Y/n]: " confirm
         confirm="${confirm:-Y}"
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
-          GEMINI_ONLY_FLAG=true
-          return 0
-        fi
-        ;;
-      3)
-        print_openai_info
-        read -r -p "Start with Cloud (OpenAI)? [Y/n]: " confirm
-        confirm="${confirm:-Y}"
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-          OPENAI_ONLY_FLAG=true
+          NO_OLLAMA_FLAG=true
           return 0
         fi
         ;;
       h|H)
         echo ""
         echo "Which option do you want details for?"
-        echo "  1 = Local   2 = Gemini   3 = OpenAI"
+        echo "  1 = Local Ollama   2 = Cloud only"
         read -r -p "Choice: " help_choice
         case "$help_choice" in
           1) print_local_info ;;
-          2) print_gemini_info ;;
-          3) print_openai_info ;;
+          2) print_cloud_info ;;
           *) echo "Unknown option." ;;
         esac
         echo ""
@@ -195,7 +163,7 @@ prompt_for_mode() {
         exit 0
         ;;
       *)
-        echo "Invalid choice. Enter 1, 2, 3, h, or q."
+        echo "Invalid choice. Enter 1, 2, h, or q."
         ;;
     esac
   done
@@ -212,7 +180,7 @@ load_env() {
 }
 
 MODE_EXPLICIT=false
-if [ "$GEMINI_ONLY_FLAG" = true ] || [ "$OPENAI_ONLY_FLAG" = true ] || [ "$LOCAL_FLAG" = true ]; then
+if [ "$LOCAL_FLAG" = true ] || [ "$NO_OLLAMA_FLAG" = true ]; then
   MODE_EXPLICIT=true
 fi
 
@@ -220,79 +188,33 @@ if [ "$SKIP_PROMPT" = false ] && [ "$MODE_EXPLICIT" = false ] && is_truthy "${DV
   SKIP_PROMPT=true
 fi
 
-# Interactive mode selection (TTY only, no flags, no .env cloud-only flags yet)
+# Interactive mode selection (TTY only, no flags)
 if [ "$SKIP_PROMPT" = false ] && [ "$MODE_EXPLICIT" = false ]; then
   if [ -t 0 ]; then
     ensure_env_file
     load_env
-    if ! is_truthy "${GEMINI_ONLY:-false}" && ! is_truthy "${OPENAI_ONLY:-false}"; then
-      prompt_for_mode
-      MODE_EXPLICIT=true
-    fi
+    prompt_for_mode
+    MODE_EXPLICIT=true
   fi
 fi
 
 load_env
-
-GEMINI_ONLY_MODE=false
-OPENAI_ONLY_MODE=false
-if is_truthy "${GEMINI_ONLY:-false}" || [ "$GEMINI_ONLY_FLAG" = true ]; then
-  GEMINI_ONLY_MODE=true
-fi
-if is_truthy "${OPENAI_ONLY:-false}" || [ "$OPENAI_ONLY_FLAG" = true ]; then
-  OPENAI_ONLY_MODE=true
-fi
-
-if [ "$LOCAL_FLAG" = true ]; then
-  GEMINI_ONLY_MODE=false
-  OPENAI_ONLY_MODE=false
-fi
-
-if [ "$GEMINI_ONLY_MODE" = true ] && [ "$OPENAI_ONLY_MODE" = true ]; then
-  echo "Error: cannot use both Gemini-only and OpenAI-only mode. Set only one of GEMINI_ONLY or OPENAI_ONLY."
-  exit 1
-fi
 
 echo "Clearing Python cache..."
 find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 COMPOSE_ARGS=(up --build)
 
-if [ "$OPENAI_ONLY_MODE" = true ]; then
-  if [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "Error: OPENAI_ONLY mode requires OPENAI_API_KEY in .env"
-    print_openai_info
-    exit 1
-  fi
-  export OPENAI_ONLY=true
-  export GEMINI_ONLY=false
-  export EMBEDDING_BACKEND="${EMBEDDING_BACKEND:-openai}"
+if [ "$NO_OLLAMA_FLAG" = true ]; then
   export OLLAMA_HOST=""
   echo ""
-  echo "OpenAI-only mode: starting Qdrant + DVAIA (skipping Ollama — no local LLM downloads)"
-  echo "  RAG embeddings: ${EMBEDDING_BACKEND}"
-  echo "  Whisper/OCR still run locally in the app container for audio/image tests"
-  echo ""
-elif [ "$GEMINI_ONLY_MODE" = true ]; then
-  if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
-    echo "Error: GEMINI_ONLY mode requires GOOGLE_API_KEY or GEMINI_API_KEY in .env"
-    print_gemini_info
-    exit 1
-  fi
-  export GEMINI_ONLY=true
-  export OPENAI_ONLY=false
-  export EMBEDDING_BACKEND="${EMBEDDING_BACKEND:-gemini}"
-  export OLLAMA_HOST=""
-  echo ""
-  echo "Gemini-only mode: starting Qdrant + DVAIA (skipping Ollama — no local LLM downloads)"
-  echo "  RAG embeddings: ${EMBEDDING_BACKEND}"
-  echo "  Whisper/OCR still run locally in the app container for audio/image tests"
+  echo "Cloud-only mode: starting Qdrant + DVAIA (skipping Ollama — no local LLM downloads)"
+  echo "  Set DEFAULT_MODEL and provider API keys in .env. See ./run_docker.sh --help."
+  echo "  Whisper/OCR still run locally in the app container for audio/image tests."
   echo ""
 else
-  # In-container URL; .env localhost:11480 is for host-native runs only.
+  # Default to local Ollama stack.
   export OLLAMA_HOST="http://ollama:11434"
-  export GEMINI_ONLY=false
-  export OPENAI_ONLY=false
   COMPOSE_ARGS=(--profile ollama "${COMPOSE_ARGS[@]}")
   echo ""
   echo "Local mode: building and running DVAIA with Ollama + Qdrant..."
