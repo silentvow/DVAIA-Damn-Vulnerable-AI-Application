@@ -13,19 +13,13 @@ from flask import Flask, request, jsonify, render_template, session, send_from_d
 from core.config import (
     get_agentic_model_id,
     get_default_model_id,
-    get_embedding_backend,
-    get_default_llm_provider,
+    get_embedding_model_id,
     get_vision_model_id,
     get_whisper_model_name,
-    gemini_configured,
-    is_gemini_only_mode,
-    is_openai_only_mode,
-    ollama_enabled,
-    openai_configured,
     reset_data_on_start_enabled,
 )
+from core.litellm_client import clear_caches as clear_llm_caches
 from core.providers import providers_payload, resolve_models_for_provider, detect_provider
-from core.openai_client import clear_openai_client_cache
 
 from app import agent as app_agent
 from app import auth as app_auth
@@ -41,7 +35,6 @@ from app import embeddings as app_embeddings
 from app import vector_store as app_vector_store
 from app.config import get_secret_key, get_database_uri, get_upload_dir
 from app.settings_store import set_reset_data_on_start
-from core.gemini_client import clear_gemini_client_cache
 from payloads.config import get_output_dir as get_payloads_output_dir
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -112,66 +105,55 @@ def api_health():
 
 
 def _llm_provider_from_request(data: dict | None = None) -> str | None:
-    """Extract llm_provider from JSON body or query string."""
-    p = None
+    """
+    Optional 'llm_provider' hint from body or query string. Returned as-is
+    (lowercased) so any LiteLLM provider name is accepted; back-compat for
+    older clients that still send 'ollama'/'gemini'/'openai'.
+    """
     if data and data.get("llm_provider"):
-        p = str(data.get("llm_provider")).strip().lower()
-    elif request.args.get("llm_provider"):
-        p = request.args.get("llm_provider", "").strip().lower()
-    if p not in ("ollama", "gemini", "openai"):
-        return None
-    if p == "ollama" and not ollama_enabled():
-        return get_default_llm_provider()
-    return p
+        val = str(data.get("llm_provider")).strip().lower()
+        return val or None
+    arg = request.args.get("llm_provider")
+    if arg:
+        val = arg.strip().lower()
+        return val or None
+    return None
 
 
 def _resolve_chat_model_id(data: dict) -> str:
-    """Pick chat model_id from body + provider; avoid Ollama when cloud-only."""
-    llm_provider = _llm_provider_from_request(data)
+    """Pick chat model_id: explicit > provider-hint default > global default."""
     explicit = (data.get("model_id") or "").strip()
+    if explicit:
+        return explicit
+    llm_provider = _llm_provider_from_request(data)
     if llm_provider:
-        provider_models = resolve_models_for_provider(llm_provider)
-        if not explicit or detect_provider(explicit) != llm_provider:
-            return provider_models["chat"]
-    if not ollama_enabled():
-        cloud = get_default_llm_provider()
-        explicit_provider = detect_provider(explicit or _default_model())
-        if explicit_provider == "ollama":
-            return resolve_models_for_provider(cloud)["chat"]
-    return explicit or _default_model()
+        return resolve_models_for_provider(llm_provider)["chat"]
+    return _default_model()
 
 
 @app.route("/api/models", methods=["GET"])
 def api_models():
-    """Return model_id format, provider configs, and role-specific models."""
-    ollama = resolve_models_for_provider("ollama")
-    gemini = resolve_models_for_provider("gemini")
-    openai = resolve_models_for_provider("openai")
+    """Default model ids and dynamic LiteLLM provider list with availability."""
+    default_model = _default_model()
     return jsonify({
-        "default": _default_model(),
+        "default": default_model,
         "agentic_model": get_agentic_model_id(),
         "vision_model": get_vision_model_id(),
+        "embedding_model": get_embedding_model_id(),
         "whisper_model": get_whisper_model_name(),
         "transcription_backend": "whisper",
-        "embedding_backend": get_embedding_backend(),
-        "gemini_configured": gemini_configured(),
-        "openai_configured": openai_configured(),
-        "gemini_only": is_gemini_only_mode(),
-        "openai_only": is_openai_only_mode(),
-        "ollama_enabled": ollama_enabled(),
-        "default_provider": get_default_llm_provider(),
+        "default_provider": detect_provider(default_model),
         "providers": providers_payload(),
         "format": (
-            "Use 'model_id' in POST body. Prefix: ollama: (local), gemini: (Google), or openai: (OpenAI). "
-            "Optional 'llm_provider': ollama|gemini|openai selects provider defaults from Settings."
+            "Use 'model_id' in POST body. LiteLLM canonical 'provider/model' format. "
+            "Legacy 'provider:model' and 'google:' prefixes are auto-converted."
         ),
         "examples": [
-            "ollama:llama3.2",
-            "gemini:gemini-2.0-flash",
-            "openai:gpt-4o-mini",
-            ollama["chat"],
-            gemini["chat"],
-            openai["chat"],
+            "ollama/llama3.2",
+            "gemini/gemini-2.0-flash",
+            "openai/gpt-4o-mini",
+            "anthropic/claude-3-5-sonnet-20241022",
+            "groq/llama-3.1-70b-versatile",
         ],
     })
 
@@ -711,8 +693,6 @@ def api_settings_get():
         "database_uri": db_uri,
         "upload_dir": upload_dir,
         "using_ephemeral_storage": ephemeral,
-        "gemini_only": is_gemini_only_mode(),
-        "openai_only": is_openai_only_mode(),
         "note": (
             "When reset_data_on_start is false, document DB, uploads, and Qdrant data "
             "persist across restarts (use data/ paths and a Qdrant volume in Docker)."
@@ -799,22 +779,13 @@ def api_settings_clear_cache():
                 **result,
             })
 
-        if target == "gemini":
-            clear_gemini_client_cache()
+        if target in ("llm", "gemini", "openai"):
+            clear_llm_caches()
             app_embeddings.clear_embeddings_cache()
             return jsonify({
                 "ok": True,
                 "target": target,
-                "message": "Gemini client and embedding cache cleared.",
-            })
-
-        if target == "openai":
-            clear_openai_client_cache()
-            app_embeddings.clear_embeddings_cache()
-            return jsonify({
-                "ok": True,
-                "target": target,
-                "message": "OpenAI client and embedding cache cleared.",
+                "message": "LLM caches cleared (LiteLLM + embedding probe).",
             })
 
         removed = clear_pycache()

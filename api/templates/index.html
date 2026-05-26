@@ -659,42 +659,25 @@ Bob,bob@example.com,2024-01-02</textarea>
         <p class="text-muted">Session backend and cache maintenance. Backend choice applies to chat, vision, agentic tools, and RAG embeddings until you change it.</p>
 
         <section class="settings-section">
-          <h3>Backend</h3>
+          <h3>Model</h3>
+          <p class="text-muted">Chat, vision, agentic, and RAG calls all route through <a href="https://docs.litellm.ai/docs/providers" target="_blank" rel="noopener">LiteLLM</a>. Pick a provider plus a model from its catalog, or paste a custom <code>provider/model</code> id.</p>
           <div id="llm_provider_control" class="settings-backend-control">
-            <div class="settings-backend-options">
-              <label class="llm-provider-option"><input type="radio" name="llm_provider" value="ollama" checked> Local (Ollama)</label>
-              <label class="llm-provider-option"><input type="radio" name="llm_provider" value="gemini" id="llm_provider_gemini"> Cloud (Gemini)</label>
-              <label class="llm-provider-option"><input type="radio" name="llm_provider" value="openai" id="llm_provider_openai"> Cloud (OpenAI)</label>
+            <div class="settings-backend-row">
+              <label for="settings_provider_select">Provider:</label>
+              <select id="settings_provider_select"></select>
+            </div>
+            <div class="settings-backend-row">
+              <label for="settings_model_select">Model:</label>
+              <select id="settings_model_select"></select>
+            </div>
+            <div class="settings-backend-row" id="settings_custom_model_row" style="display:none;">
+              <label for="settings_custom_model">Custom id:</label>
+              <input type="text" id="settings_custom_model" placeholder="provider/model (e.g. openai/gpt-4o-mini)">
             </div>
             <div id="llm_provider_notes">
-              <div id="llm_provider_note_gemini_only" class="settings-info-box" style="display:none;">
-                <p><strong>Gemini-only mode</strong> — Ollama is disabled (no local LLM downloads). <strong>Whisper</strong> (audio STT) and <strong>OCR/Tesseract</strong> still run locally in this container (~150&nbsp;MB Whisper <code>base</code> model, bundled in Docker).</p>
-                <p>To enable <strong>local Ollama</strong> instead, set these in <code>.env</code> and restart:</p>
-                <ul class="settings-env-list">
-                  <li><code>GEMINI_ONLY=false</code></li>
-                  <li><code>EMBEDDING_BACKEND=ollama</code></li>
-                  <li><code>DEFAULT_MODEL=ollama:llama3.2</code></li>
-                  <li><code>VISION_MODEL=ollama:qwen2.5vl:7b</code></li>
-                  <li><code>AGENTIC_MODEL=qwen3:0.6b</code></li>
-                  <li><code>EMBEDDING_MODEL=nomic-embed-text</code></li>
-                </ul>
-                <p>Restart with <code>./run_docker.sh</code> (not <code>--gemini-only</code>). Docker pulls these Ollama models on first start:</p>
-                <ul class="settings-size-list">
-                  <li><code>llama3.2</code> — ~2&nbsp;GB (chat / main panels)</li>
-                  <li><code>nomic-embed-text</code> — ~275&nbsp;MB (RAG embeddings)</li>
-                  <li><code>qwen3:0.6b</code> — ~400&nbsp;MB (Agentic / CoT)</li>
-                  <li><code>qwen2.5vl:7b</code> — ~6&nbsp;GB (Document Injection vision)</li>
-                </ul>
-                <p class="settings-info-footnote text-muted">Rough total <strong>~9–10&nbsp;GB disk</strong> for Ollama models; allow <strong>8–16&nbsp;GB RAM</strong> for CPU inference. Re-index RAG documents after switching embedding backends (<code>rag_chunks</code>, <code>rag_chunks_gemini</code>, <code>rag_chunks_openai</code>).</p>
-              </div>
-              <div id="llm_provider_note_openai_only" class="settings-info-box" style="display:none;">
-                <p><strong>OpenAI-only mode</strong> — Ollama is disabled (no local LLM downloads). <strong>Whisper</strong> (audio STT) and <strong>OCR/Tesseract</strong> still run locally in this container.</p>
-                <p>To enable <strong>local Ollama</strong> instead, set <code>OPENAI_ONLY=false</code>, <code>EMBEDDING_BACKEND=ollama</code>, Ollama model vars in <code>.env</code>, and restart with <code>./run_docker.sh</code> (not <code>--openai-only</code>).</p>
-              </div>
-              <p id="llm_provider_note_cloud" class="settings-note" style="display:none;">Prompts and retrieved context are sent to Google Gemini API. Set <code>GOOGLE_API_KEY</code> and <code>GEMINI_*_MODEL</code> in <code>.env</code>; use <code>EMBEDDING_BACKEND=gemini</code> for RAG.</p>
-              <p id="llm_provider_note_cloud_openai" class="settings-note" style="display:none;">Prompts and retrieved context are sent to OpenAI API. Set <code>OPENAI_API_KEY</code> and <code>OPENAI_*_MODEL</code> in <code>.env</code>; use <code>EMBEDDING_BACKEND=openai</code> for RAG.</p>
-              <p id="llm_provider_note_no_key" class="settings-note" style="display:none;">Cloud (Gemini): set <code>GOOGLE_API_KEY</code> in <code>.env</code> to enable.</p>
-              <p id="llm_provider_note_no_key_openai" class="settings-note" style="display:none;">Cloud (OpenAI): set <code>OPENAI_API_KEY</code> in <code>.env</code> to enable.</p>
+              <p id="llm_provider_current" class="settings-note text-muted"></p>
+              <p id="llm_provider_note_missing_key" class="settings-note" style="display:none;"></p>
+              <p class="settings-note text-muted">RAG embeddings use <code>EMBEDDING_MODEL</code> (independent of chat). Switching embedding model creates a new Qdrant collection automatically.</p>
             </div>
           </div>
         </section>
@@ -724,13 +707,12 @@ Bob,bob@example.com,2024-01-02</textarea>
 
         <section class="settings-section">
           <h3>Cache control</h3>
-          <p class="text-muted">Document dropdowns (Document / RAG panels) list <strong>uploads</strong> and <strong>generated payloads</strong> — separate from the Qdrant RAG index. Use <strong>Clear all lab data</strong> to empty those lists and wipe vectors. <strong>Clear RAG index</strong> only deletes Qdrant collections (<code>rag_chunks</code>, <code>rag_chunks_gemini</code>, <code>rag_chunks_openai</code>, and any explicit <code>QDRANT_COLLECTION</code>).</p>
+          <p class="text-muted">Document dropdowns (Document / RAG panels) list <strong>uploads</strong> and <strong>generated payloads</strong> — separate from the Qdrant RAG index. Use <strong>Clear all lab data</strong> to empty those lists and wipe vectors. <strong>Clear RAG index</strong> deletes every <code>rag_chunks*</code> Qdrant collection (and any explicit <code>QDRANT_COLLECTION</code>).</p>
           <div class="settings-cache-actions">
             <button type="button" id="btn_clear_lab_data" class="btn-primary">Clear all lab data</button>
             <button type="button" id="btn_clear_rag_cache" class="btn">Clear RAG index only</button>
             <button type="button" id="btn_clear_documents_cache" class="btn">Clear uploads only</button>
-            <button type="button" id="btn_clear_gemini_cache" class="btn">Clear Gemini cache</button>
-            <button type="button" id="btn_clear_openai_cache" class="btn">Clear OpenAI cache</button>
+            <button type="button" id="btn_clear_llm_cache" class="btn">Clear LLM cache</button>
             <button type="button" id="btn_clear_pycache" class="btn">Clear __pycache__</button>
           </div>
           <div id="settings_cache_status" class="settings-status message" style="display:none;"></div>
@@ -787,30 +769,23 @@ Bob,bob@example.com,2024-01-02</textarea>
         </ul>
 
         <h3>Model backend (Local vs Cloud)</h3>
-        <p>Open <strong>Settings</strong> in the sidebar: choose <strong>Local (Ollama)</strong>, <strong>Cloud (Gemini)</strong>, or <strong>Cloud (OpenAI)</strong>. Your choice applies to chat, vision, agentic tools, and RAG embeddings for the session. Whisper OCR/STT always runs locally.</p>
-        <ul>
-          <li><strong>Local (Ollama):</strong> Default — requires Ollama and pulled models (see below).</li>
-          <li><strong>Cloud (Gemini):</strong> Set <code>GOOGLE_API_KEY</code> in <code>.env</code> (Google AI Studio). Re-index RAG when switching backends (<code>rag_chunks_gemini</code>).</li>
-          <li><strong>Cloud (OpenAI):</strong> Set <code>OPENAI_API_KEY</code> in <code>.env</code>. Re-index RAG when switching backends (<code>rag_chunks_openai</code>).</li>
-          <li><strong>Cloud-only Docker:</strong> <code>GEMINI_ONLY=true</code> + <code>./run_docker.sh --gemini-only</code>, or <code>OPENAI_ONLY=true</code> + <code>./run_docker.sh --openai-only</code>, to skip Ollama entirely.</li>
-        </ul>
+        <p>Open <strong>Settings</strong> in the sidebar to pick a provider and model. Every LiteLLM-supported provider works — OpenAI, Gemini, Ollama, Anthropic, Bedrock, Vertex, Groq, OpenRouter, and more. Whisper OCR/STT always runs locally.</p>
 
         <h3>Models and configuration</h3>
         <p>Copy <code>.env.example</code> to <code>.env</code> and adjust:</p>
         <ul>
-          <li><strong>DEFAULT_MODEL</strong> — Ollama chat default (e.g. <code>ollama:llama3.2</code>).</li>
-          <li><strong>VISION_MODEL</strong> — Ollama vision (e.g. <code>ollama:qwen2.5vl:7b</code>).</li>
-          <li><strong>AGENTIC_MODEL</strong> — Ollama agentic (e.g. <code>qwen3:0.6b</code>).</li>
-          <li><strong>GOOGLE_API_KEY</strong> — Enables Cloud (Gemini) toggle.</li>
-          <li><strong>OPENAI_API_KEY</strong> — Enables Cloud (OpenAI) toggle.</li>
-          <li><strong>GEMINI_CHAT_MODEL</strong> / <strong>GEMINI_VISION_MODEL</strong> / <strong>GEMINI_AGENTIC_MODEL</strong> — Gemini defaults.</li>
-          <li><strong>OPENAI_CHAT_MODEL</strong> / <strong>OPENAI_VISION_MODEL</strong> / <strong>OPENAI_AGENTIC_MODEL</strong> — OpenAI defaults (e.g. <code>gpt-4o-mini</code>).</li>
-          <li><strong>EMBEDDING_BACKEND</strong> — <code>ollama</code> (default), <code>gemini</code>, or <code>openai</code>; <strong>EMBEDDING_MODEL</strong> / <strong>EMBEDDING_MODEL_GEMINI</strong> / <strong>EMBEDDING_MODEL_OPENAI</strong> for RAG.</li>
-          <li><strong>WHISPER_MODEL</strong> — Local audio transcription (always local).</li>
-          <li><strong>QDRANT_URL</strong> — Vector store for RAG.</li>
+          <li><strong>DEFAULT_MODEL</strong> — chat default in LiteLLM <code>provider/model</code> form (e.g. <code>ollama/llama3.2</code>, <code>openai/gpt-4o-mini</code>, <code>anthropic/claude-3-5-sonnet-20241022</code>). Legacy <code>provider:model</code> is auto-converted.</li>
+          <li><strong>VISION_MODEL</strong> — vision model id (e.g. <code>ollama/qwen2.5vl:7b</code>, <code>openai/gpt-4o</code>, <code>gemini/gemini-2.0-flash</code>).</li>
+          <li><strong>AGENTIC_MODEL</strong> — agentic / thinking model (e.g. <code>ollama/qwen3:0.6b</code>).</li>
+          <li><strong>EMBEDDING_MODEL</strong> — RAG embedding model (e.g. <code>ollama/nomic-embed-text</code>, <code>openai/text-embedding-3-small</code>). Qdrant collection name encodes model + dimension.</li>
+          <li><strong>Provider API keys</strong> — <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code> (or <code>GOOGLE_API_KEY</code>), <code>ANTHROPIC_API_KEY</code>, etc. LiteLLM picks each up automatically.</li>
+          <li><strong>OLLAMA_HOST</strong> — local Ollama host (default <code>http://localhost:11480</code>; Docker sets <code>http://ollama:11434</code>).</li>
+          <li><strong>QDRANT_MODE</strong> — <code>local</code> (embedded, no Docker required; default) or <code>server</code> (separate Qdrant). <strong>QDRANT_PATH</strong> for local-mode storage (default <code>data/qdrant</code>).</li>
+          <li><strong>WHISPER_MODEL</strong> — local audio transcription model.</li>
           <li><strong>WEB_FETCH_JS</strong> — <code>true</code> for Playwright-based web fetch.</li>
+          <li><strong>LITELLM_MODELS_&lt;PROVIDER&gt;</strong> — comma-separated model id list overriding the Settings dropdown for a provider.</li>
         </ul>
-        <p>Run <code>ollama pull &lt;model&gt;</code> for local models, or set <code>GOOGLE_API_KEY</code> for Gemini-only mode without Ollama.</p>
+        <p>Run <code>ollama pull &lt;model&gt;</code> for Ollama models, or set the appropriate cloud API key and pick the matching <code>provider/model</code> in Settings.</p>
       </div>
     </div>
     <div class="clear"></div>

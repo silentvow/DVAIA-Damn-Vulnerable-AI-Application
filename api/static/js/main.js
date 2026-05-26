@@ -1,5 +1,7 @@
 const API = "/api";
-const LLM_PROVIDER_KEY = "dvaia_llm_provider";
+// Stores the full LiteLLM model id ("provider/model"). Replaces dvaia_llm_provider.
+const MODEL_ID_KEY = "dvaia_model_id";
+const CUSTOM_MODEL_SENTINEL = "__custom__";
 let modelsConfigCache = null;
 let settingsConfigCache = null;
 
@@ -15,105 +17,132 @@ async function loadModelsConfig() {
   return modelsConfigCache;
 }
 
-function getProvider() {
-  const cfg = modelsConfigCache || {};
-  if (cfg.openai_only) return "openai";
-  if (cfg.gemini_only) return "gemini";
-  if (cfg.ollama_enabled === false) return cfg.default_provider || "gemini";
-  const stored = sessionStorage.getItem(LLM_PROVIDER_KEY);
-  if (stored === "gemini" || stored === "openai" || stored === "ollama") return stored;
-  return cfg.default_provider || "ollama";
+function splitModelId(id) {
+  const s = (id || "").trim();
+  const slash = s.indexOf("/");
+  if (slash > 0) return { provider: s.slice(0, slash).toLowerCase(), model: s.slice(slash + 1) };
+  const colon = s.indexOf(":");
+  if (colon > 0) return { provider: s.slice(0, colon).toLowerCase(), model: s.slice(colon + 1) };
+  return { provider: "ollama", model: s };
 }
 
-function setProvider(provider) {
-  sessionStorage.setItem(LLM_PROVIDER_KEY, provider);
+function getModelId() {
+  const cfg = modelsConfigCache || {};
+  const stored = sessionStorage.getItem(MODEL_ID_KEY);
+  if (stored) return stored;
+  return cfg.default || "ollama/llama3.2";
+}
+
+function setModelId(id) {
+  const trimmed = (id || "").trim();
+  if (trimmed) sessionStorage.setItem(MODEL_ID_KEY, trimmed);
+  else sessionStorage.removeItem(MODEL_ID_KEY);
   updateProviderUI();
 }
 
-function providerModels() {
-  const cfg = modelsConfigCache || {};
-  const p = getProvider();
-  return (cfg.providers && cfg.providers[p]) || {};
+function getProvider() {
+  return splitModelId(getModelId()).provider;
 }
 
 async function getChatModelId() {
   await loadModelsConfig();
-  const m = providerModels();
-  return m.chat || modelsConfigCache.default || "ollama:llama3.2";
+  return getModelId();
 }
 
 async function getVisionModelId() {
   await loadModelsConfig();
-  const m = providerModels();
-  return m.vision || modelsConfigCache.vision_model || "ollama:qwen2.5vl:7b";
+  return modelsConfigCache.vision_model || "ollama/qwen2.5vl:7b";
 }
 
 function llmProviderPayload() {
+  // Back-compat hint for older endpoints; model_id is the canonical field.
   return { llm_provider: getProvider() };
 }
 
 function updateProviderUI() {
   const cfg = modelsConfigCache || {};
-  const geminiOk = !!cfg.gemini_configured;
-  const openaiOk = !!cfg.openai_configured;
-  const ollamaOk = cfg.ollama_enabled !== false && !cfg.gemini_only && !cfg.openai_only;
-  if (cfg.gemini_only && geminiOk) {
-    sessionStorage.setItem(LLM_PROVIDER_KEY, "gemini");
-  }
-  if (cfg.openai_only && openaiOk) {
-    sessionStorage.setItem(LLM_PROVIDER_KEY, "openai");
-  }
-  const provider = getProvider();
-  document.querySelectorAll('input[name="llm_provider"]').forEach(el => {
-    el.checked = el.value === provider;
-    if (el.value === "gemini") el.disabled = !geminiOk;
-    if (el.value === "openai") el.disabled = !openaiOk;
-    if (el.value === "ollama") el.disabled = !ollamaOk;
-  });
-  const noteGeminiOnly = document.getElementById("llm_provider_note_gemini_only");
-  const noteOpenaiOnly = document.getElementById("llm_provider_note_openai_only");
-  const noteCloudGemini = document.getElementById("llm_provider_note_cloud");
-  const noteCloudOpenai = document.getElementById("llm_provider_note_cloud_openai");
-  const noteNoKeyGemini = document.getElementById("llm_provider_note_no_key");
-  const noteNoKeyOpenai = document.getElementById("llm_provider_note_no_key_openai");
-  [noteGeminiOnly, noteOpenaiOnly, noteCloudGemini, noteCloudOpenai, noteNoKeyGemini, noteNoKeyOpenai].forEach(el => {
-    if (el) el.style.display = "none";
-  });
+  const providers = cfg.providers || {};
+  const providerSel = document.getElementById("settings_provider_select");
+  const modelSel = document.getElementById("settings_model_select");
+  const customRow = document.getElementById("settings_custom_model_row");
+  const customInput = document.getElementById("settings_custom_model");
+  const noteCurrent = document.getElementById("llm_provider_current");
+  const noteMissing = document.getElementById("llm_provider_note_missing_key");
 
-  if (cfg.openai_only && provider === "openai") {
-    if (noteOpenaiOnly) noteOpenaiOnly.style.display = "block";
-  } else if (cfg.gemini_only && provider === "gemini") {
-    if (noteGeminiOnly) noteGeminiOnly.style.display = "block";
-  } else if (provider === "openai") {
-    if (noteCloudOpenai) noteCloudOpenai.style.display = "block";
-  } else if (provider === "gemini") {
-    if (noteCloudGemini) noteCloudGemini.style.display = "block";
-  } else if (!geminiOk && noteNoKeyGemini) {
-    noteNoKeyGemini.style.display = "block";
+  const current = getModelId();
+  const { provider: currentProvider, model: currentModel } = splitModelId(current);
+
+  if (providerSel) {
+    providerSel.innerHTML = "";
+    const keys = Object.keys(providers).sort();
+    if (!keys.includes(currentProvider)) keys.unshift(currentProvider);
+    for (const p of keys) {
+      const opt = document.createElement("option");
+      opt.value = p;
+      const info = providers[p];
+      const ok = info && info.available;
+      opt.textContent = p + (info && !ok ? " (no key)" : "");
+      if (p === currentProvider) opt.selected = true;
+      providerSel.appendChild(opt);
+    }
   }
-  if (!openaiOk && provider !== "openai" && noteNoKeyOpenai) {
-    noteNoKeyOpenai.style.display = "block";
+
+  const provInfo = providers[currentProvider] || { models: [], available: false };
+  const provModels = Array.isArray(provInfo.models) ? provInfo.models : [];
+  const isKnownModel = provModels.includes(currentModel);
+
+  if (modelSel) {
+    modelSel.innerHTML = "";
+    for (const m of provModels) {
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      if (m === currentModel) opt.selected = true;
+      modelSel.appendChild(opt);
+    }
+    const customOpt = document.createElement("option");
+    customOpt.value = CUSTOM_MODEL_SENTINEL;
+    customOpt.textContent = isKnownModel ? "Custom model id…" : ("Custom: " + current);
+    if (!isKnownModel) customOpt.selected = true;
+    modelSel.appendChild(customOpt);
   }
+
+  const showCustom = !isKnownModel;
+  if (customRow) customRow.style.display = showCustom ? "" : "none";
+  if (customInput && showCustom) customInput.value = current;
+
+  if (noteCurrent) {
+    noteCurrent.textContent = "Active model: " + current;
+  }
+  if (noteMissing) {
+    if (provInfo.available) {
+      noteMissing.style.display = "none";
+    } else {
+      noteMissing.style.display = "block";
+      noteMissing.innerHTML =
+        "Provider <code>" + currentProvider + "</code> has no credentials configured. Set the API key in <code>.env</code> and restart.";
+    }
+  }
+
   updateDirectSamplingUI();
 }
 
 function updateDirectSamplingUI() {
   const provider = getProvider();
-  const isCloud = provider === "gemini" || provider === "openai";
-  const cloudName = provider === "openai" ? "OpenAI" : "Gemini";
+  const isOllama = provider === "ollama" || provider === "ollama_chat";
   const intro = document.getElementById("sampling_options_intro");
   if (intro) {
-    intro.textContent = isCloud
-      ? "Cloud (" + cloudName + "): temperature, top P, and max tokens are sent to the API. Top K applies to Gemini only. Repeat penalty is Ollama-only and is ignored."
-      : "Local (Ollama): all options below are passed to the Ollama runtime.";
+    intro.textContent = isOllama
+      ? "Local (Ollama): all options below are passed to the Ollama runtime."
+      : ("Provider " + provider + ": temperature, top_p, and max tokens are sent. Provider-specific params (top_k, repeat_penalty) are dropped automatically if unsupported.");
   }
   document.querySelectorAll("[data-sampling-for='ollama']").forEach(el => {
-    el.style.display = isCloud ? "none" : "";
+    el.style.display = isOllama ? "" : "none";
   });
   const rp = document.getElementById("opt_repeat_penalty");
-  if (rp) rp.disabled = isCloud;
+  if (rp) rp.disabled = !isOllama;
   const topKRow = document.getElementById("opt_top_k")?.closest(".sampling-option-row");
-  if (topKRow) topKRow.style.display = provider === "openai" ? "none" : "";
+  if (topKRow) topKRow.style.display = "";
 }
 
 function getDirectSamplingOptions() {
@@ -121,15 +150,13 @@ function getDirectSamplingOptions() {
   const t = parseFloat(document.getElementById("opt_temperature")?.value);
   if (!Number.isNaN(t)) opts.temperature = t;
   const k = parseInt(document.getElementById("opt_top_k")?.value, 10);
-  if (getProvider() !== "openai" && !Number.isNaN(k)) opts.top_k = k;
+  if (!Number.isNaN(k)) opts.top_k = k;
   const p = parseFloat(document.getElementById("opt_top_p")?.value);
   if (!Number.isNaN(p)) opts.top_p = p;
   const m = parseInt(document.getElementById("opt_max_tokens")?.value, 10);
   if (!Number.isNaN(m)) opts.max_tokens = m;
-  if (getProvider() === "ollama") {
-    const rp = parseFloat(document.getElementById("opt_repeat_penalty")?.value);
-    if (!Number.isNaN(rp)) opts.repeat_penalty = rp;
-  }
+  const rp = parseFloat(document.getElementById("opt_repeat_penalty")?.value);
+  if (!Number.isNaN(rp)) opts.repeat_penalty = rp;
   return opts;
 }
 
@@ -235,7 +262,7 @@ async function clearSettingsCache(target, buttonEl) {
       showSettingsCacheStatus(err, true);
       return;
     }
-    if (target === "gemini" || target === "openai") {
+    if (target === "llm" || target === "gemini" || target === "openai") {
       modelsConfigCache = null;
       await loadModelsConfig();
     }
@@ -284,20 +311,41 @@ document.getElementById("btn_clear_documents_cache")?.addEventListener("click", 
     return;
   clearSettingsCache("documents", this);
 });
-document.getElementById("btn_clear_gemini_cache")?.addEventListener("click", function () {
-  clearSettingsCache("gemini", this);
-});
-document.getElementById("btn_clear_openai_cache")?.addEventListener("click", function () {
-  clearSettingsCache("openai", this);
+document.getElementById("btn_clear_llm_cache")?.addEventListener("click", function () {
+  clearSettingsCache("llm", this);
 });
 document.getElementById("btn_clear_pycache")?.addEventListener("click", function () {
   clearSettingsCache("pycache", this);
 });
 
-document.querySelectorAll('input[name="llm_provider"]').forEach(el => {
-  el.addEventListener("change", () => {
-    if (el.checked) setProvider(el.value);
-  });
+document.getElementById("settings_provider_select")?.addEventListener("change", function () {
+  const p = this.value;
+  const cfg = modelsConfigCache || {};
+  const list = ((cfg.providers || {})[p] || {}).models || [];
+  const next = list[0] || splitModelId(getModelId()).model;
+  setModelId(next ? p + "/" + next : p + "/");
+});
+
+document.getElementById("settings_model_select")?.addEventListener("change", function () {
+  const providerSel = document.getElementById("settings_provider_select");
+  const provider = (providerSel && providerSel.value) || getProvider();
+  if (this.value === CUSTOM_MODEL_SENTINEL) {
+    const customRow = document.getElementById("settings_custom_model_row");
+    if (customRow) customRow.style.display = "";
+    const ci = document.getElementById("settings_custom_model");
+    if (ci) {
+      ci.value = ci.value || getModelId();
+      ci.focus();
+      ci.select();
+    }
+    return;
+  }
+  setModelId(provider + "/" + this.value);
+});
+
+document.getElementById("settings_custom_model")?.addEventListener("change", function () {
+  const v = this.value.trim();
+  if (v) setModelId(v);
 });
 
 async function getSession() {
@@ -1023,8 +1071,7 @@ let agenticLastToolCalls = [];
 
 async function getAgenticModelId() {
   await loadModelsConfig();
-  const m = providerModels();
-  return m.agentic || modelsConfigCache.agentic_model || "qwen3:0.6b";
+  return (modelsConfigCache && modelsConfigCache.agentic_model) || "ollama/qwen3:0.6b";
 }
 
 function parseThinkingIntoSteps(thinkingText) {
