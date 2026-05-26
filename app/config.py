@@ -39,6 +39,34 @@ def get_mfa_issuer() -> str:
     return os.getenv("MFA_ISSUER", "RedTeamApp")
 
 
+def get_qdrant_mode() -> str:
+    """
+    Qdrant storage mode: 'local' (embedded, in-process, no Docker required) or
+    'server' (separate Qdrant service).
+
+    Defaults to 'local' unless QDRANT_URL or QDRANT_HOST is explicitly set
+    (then 'server'), so first-time users don't need Docker for RAG.
+    Override with QDRANT_MODE=local|server.
+    """
+    mode = os.getenv("QDRANT_MODE", "").strip().lower()
+    if mode in ("local", "server"):
+        return mode
+    if os.getenv("QDRANT_URL", "").strip() or os.getenv("QDRANT_HOST", "").strip():
+        return "server"
+    return "local"
+
+
+def get_qdrant_path() -> str:
+    """Local-mode storage path. QDRANT_PATH; default: project root / data / qdrant."""
+    val = os.getenv("QDRANT_PATH", "").strip()
+    if val:
+        return val
+    root = Path(__file__).resolve().parent.parent
+    out = root / "data" / "qdrant"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return str(out)
+
+
 def get_qdrant_url() -> str:
     """Qdrant server URL. When QDRANT_HOST is set (e.g. by Docker), use http://QDRANT_HOST:port so .env cannot override with localhost."""
     host = os.getenv("QDRANT_HOST", "").strip()
@@ -48,39 +76,42 @@ def get_qdrant_url() -> str:
     return os.getenv("QDRANT_URL", "http://localhost:6333").strip()
 
 
-def _default_rag_collection(backend: str) -> str:
-    if backend == "gemini":
-        return "rag_chunks_gemini"
-    if backend == "openai":
-        return "rag_chunks_openai"
-    return "rag_chunks"
+def get_qdrant_collection_override() -> Optional[str]:
+    """
+    When QDRANT_COLLECTION is set, that one collection is used for all RAG ops
+    (back-compat / single-collection mode). Otherwise the collection name is
+    derived from the embedding model id + dimension by app.embeddings.
+    """
+    val = os.getenv("QDRANT_COLLECTION", "").strip()
+    return val or None
 
 
 def get_qdrant_collection() -> str:
     """
-    Qdrant collection name for RAG chunks.
-    When QDRANT_COLLECTION is unset, uses backend-specific default collection.
+    Legacy alias. Returns the override if set, else falls through to the
+    embedding-model-derived collection from app.embeddings.
+
+    Prefer get_qdrant_collection_override() + app.embeddings.current_collection_name()
+    directly in new code.
     """
-    explicit = os.getenv("QDRANT_COLLECTION", "").strip()
+    explicit = get_qdrant_collection_override()
     if explicit:
         return explicit
-    backend = os.getenv("EMBEDDING_BACKEND", "ollama").strip().lower()
-    return _default_rag_collection(backend)
+    try:
+        from app import embeddings as app_embeddings
+
+        return app_embeddings.current_collection_name()
+    except Exception:
+        return "rag_chunks"
 
 
 def get_qdrant_collection_for_provider(llm_provider: Optional[str] = None) -> str:
     """
-    Qdrant collection for RAG. Uses provider-specific collection unless QDRANT_COLLECTION is set.
+    Legacy alias kept for older imports. llm_provider is ignored — embedding
+    model (and therefore collection name) is global, independent of the chat
+    provider.
     """
-    explicit = os.getenv("QDRANT_COLLECTION", "").strip()
-    if explicit:
-        return explicit
-    if llm_provider:
-        p = llm_provider.strip().lower()
-        if p in ("gemini", "openai"):
-            return _default_rag_collection(p)
-    backend = os.getenv("EMBEDDING_BACKEND", "ollama").strip().lower()
-    return _default_rag_collection(backend)
+    return get_qdrant_collection()
 
 
 def get_qdrant_api_key() -> Optional[str]:

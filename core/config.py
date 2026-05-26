@@ -33,10 +33,11 @@ OLLAMA_HOST = "http://localhost:11480"  # override with env OLLAMA_HOST
 # Runner and Docker: base URL and port from .env (no hardcoded localhost in code)
 REDTEAM_API_URL_DEFAULT = "http://127.0.0.1:5000"
 PORT_DEFAULT = 5000
-# Embedding backend: ollama | gemini | openai
+# Embedding backend: ollama | gemini | openai (legacy; kept for back-compat)
 EMBEDDING_BACKEND = "ollama"
-# Embedding model for RAG (Ollama model name, e.g. nomic-embed-text)
-EMBEDDING_MODEL = "nomic-embed-text"
+# Embedding model for RAG. LiteLLM canonical 'provider/model' form preferred.
+# Bare 'nomic-embed-text' is normalized to 'ollama/nomic-embed-text' at read time.
+EMBEDDING_MODEL = "ollama/nomic-embed-text"
 # Gemini embedding model (when EMBEDDING_BACKEND=gemini)
 EMBEDDING_MODEL_GEMINI = "text-embedding-004"
 # OpenAI embedding model (when EMBEDDING_BACKEND=openai)
@@ -251,9 +252,9 @@ def get_embedding_backend() -> str:
 
 
 def get_embedding_model_id() -> str:
-    """Embedding model for RAG (e.g. nomic-embed-text). Used when backend is ollama."""
+    """Embedding model for RAG. Normalized to LiteLLM '<provider>/<model>' form."""
     _ensure_env_loaded()
-    return os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL)
+    return _normalize_model_id(os.getenv("EMBEDDING_MODEL", EMBEDDING_MODEL))
 
 
 def get_gemini_embedding_model() -> str:

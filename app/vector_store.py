@@ -1,15 +1,26 @@
 """
 Qdrant vector store for RAG. Single place for collection create, upsert, search, list.
-Uses app.config for QDRANT_URL, QDRANT_COLLECTION, optional QDRANT_API_KEY.
+
+Supports two modes (selected automatically by app.config.get_qdrant_mode):
+  - 'local'  — embedded in-process Qdrant (no Docker required); files under QDRANT_PATH.
+  - 'server' — separate Qdrant service at QDRANT_URL.
+
+Collection name is derived from the current embedding model in
+app.embeddings.current_collection_name(), so vectors of different dimensions
+never share a collection.
 """
+from __future__ import annotations
+
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import (
     get_qdrant_api_key,
-    get_qdrant_collection,
-    get_qdrant_collection_for_provider,
+    get_qdrant_collection_override,
+    get_qdrant_mode,
+    get_qdrant_path,
     get_qdrant_url,
 )
 
@@ -17,25 +28,37 @@ _client = None
 
 
 def _get_client():
-    """Lazy init Qdrant client."""
+    """Lazy init Qdrant client. Picks local (embedded) or server based on QDRANT_MODE."""
     global _client
     if _client is None:
         from qdrant_client import QdrantClient
 
-        url = get_qdrant_url()
-        api_key = get_qdrant_api_key()
-        _client = QdrantClient(url=url, api_key=api_key)
+        if get_qdrant_mode() == "local":
+            path = get_qdrant_path()
+            Path(path).mkdir(parents=True, exist_ok=True)
+            _client = QdrantClient(path=path)
+        else:
+            url = get_qdrant_url()
+            api_key = get_qdrant_api_key()
+            _client = QdrantClient(url=url, api_key=api_key)
     return _client
 
 
 def _collection_name(llm_provider: Optional[str] = None) -> str:
-    if llm_provider:
-        return get_qdrant_collection_for_provider(llm_provider)
-    return get_qdrant_collection()
+    """
+    Collection name: QDRANT_COLLECTION override if set, else from app.embeddings.
+    llm_provider is accepted for back-compat but ignored.
+    """
+    override = get_qdrant_collection_override()
+    if override:
+        return override
+    from app import embeddings as app_embeddings
+
+    return app_embeddings.current_collection_name()
 
 
 def reset_collection(llm_provider: Optional[str] = None) -> None:
-    """Delete the RAG collection if it exists. Next add will recreate it. Used for RESET_DB_ON_START."""
+    """Delete the active RAG collection if it exists. Next add will recreate it."""
     try:
         client = _get_client()
         name = _collection_name(llm_provider)
@@ -52,18 +75,22 @@ def invalidate_client_cache() -> None:
 
 
 def reset_all_rag_collections() -> List[str]:
-    """Delete all RAG collections (explicit + default Ollama/Gemini names)."""
-    import os
-
+    """Delete every RAG collection (override + any 'rag_chunks*' name, including legacy)."""
     names: List[str] = []
-    explicit = os.getenv("QDRANT_COLLECTION", "").strip()
-    if explicit:
-        names.append(explicit)
-    for default_name in ("rag_chunks", "rag_chunks_gemini", "rag_chunks_openai"):
-        if default_name not in names:
-            names.append(default_name)
+    override = get_qdrant_collection_override()
+    if override:
+        names.append(override)
 
     client = _get_client()
+    try:
+        existing = client.get_collections().collections or []
+        for c in existing:
+            n = getattr(c, "name", "") or ""
+            if n.startswith("rag_chunks") and n not in names:
+                names.append(n)
+    except Exception:
+        pass
+
     cleared: List[str] = []
     errors: List[str] = []
     for name in names:
@@ -129,10 +156,7 @@ def search(
     limit: int = 5,
     llm_provider: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Similarity search. Returns list of payload dicts with at least "content".
-    Returns empty list if collection does not exist or query fails.
-    """
+    """Similarity search. Returns list of payload dicts with at least 'content'."""
     hits = search_with_scores(query_vector, limit=limit, llm_provider=llm_provider)
     return [{k: v for k, v in h.items() if k != "score"} for h in hits]
 
@@ -142,10 +166,7 @@ def search_with_scores(
     limit: int = 5,
     llm_provider: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Similarity search returning payload dicts plus "score" (similarity).
-    Used by search_diverse to take top N per source.
-    """
+    """Similarity search returning payload dicts plus 'score' (similarity)."""
     if not query_vector:
         return []
     try:

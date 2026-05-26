@@ -1,122 +1,78 @@
 """
-Embedding service for RAG using Ollama, Gemini, or OpenAI.
-Documents and chunks are embedded when added; search uses similarity over vectors.
+RAG embedding service via LiteLLM.
+
+A single embedding model is configured globally through EMBEDDING_MODEL in
+.env (LiteLLM canonical 'provider/model' form; bare names default to ollama/).
+
+The embedding model is independent of the chat provider — e.g. chat with
+openai/gpt-4o while embedding with ollama/nomic-embed-text. The Qdrant
+collection name is derived from the embedding model id and its vector
+dimension so swapping models doesn't pollute an existing collection.
 """
 from typing import List, Optional
 
-from core.config import (
-    get_embedding_backend,
-    get_embedding_model_id,
-    get_gemini_embedding_model,
-    get_google_api_key,
-    get_openai_api_key,
-    get_openai_embedding_model,
-    get_ollama_host,
-)
-
-_embeddings_cache: dict = {}
+from core import litellm_client
+from core.config import get_embedding_model_id
 
 
-def _backend_for_provider(llm_provider: Optional[str] = None) -> str:
-    """Resolve embedding backend from explicit provider or env default."""
-    if llm_provider:
-        p = llm_provider.strip().lower()
-        if p in ("gemini", "openai", "ollama"):
-            return p
-    backend = get_embedding_backend()
-    return backend if backend in ("ollama", "gemini", "openai") else "ollama"
+def _sanitize(s: str) -> str:
+    """Make a string safe for use inside a Qdrant collection name."""
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in s)
 
 
-def _collection_suffix_key(backend: str) -> str:
-    if backend in ("gemini", "openai"):
-        return backend
-    return "ollama"
+def current_embedding_model() -> str:
+    """LiteLLM-canonical embedding model id (e.g. ollama/nomic-embed-text)."""
+    return litellm_client.normalize_model_id(get_embedding_model_id())
 
 
-def _get_embeddings(backend: Optional[str] = None):
-    """Lazy init embeddings client for ollama, gemini, or openai."""
-    resolved = _backend_for_provider(backend)
-    cache_key = _collection_suffix_key(resolved)
-    if cache_key in _embeddings_cache:
-        return _embeddings_cache[cache_key]
-
-    if resolved == "openai":
-        api_key = get_openai_api_key()
-        if not api_key:
-            raise RuntimeError(
-                "OpenAI embeddings require OPENAI_API_KEY. "
-                "Set the key in .env or choose another backend in Settings."
-            )
-        try:
-            from langchain_openai import OpenAIEmbeddings
-        except ImportError:
-            raise RuntimeError(
-                "OpenAI embeddings require langchain-openai. pip install langchain-openai"
-            )
-        model = get_openai_embedding_model()
-        _embeddings_cache[cache_key] = OpenAIEmbeddings(model=model, api_key=api_key)
-        return _embeddings_cache[cache_key]
-
-    if resolved == "gemini":
-        api_key = get_google_api_key()
-        if not api_key:
-            raise RuntimeError(
-                "Gemini embeddings require GOOGLE_API_KEY. "
-                "Set the key in .env or choose Local (Ollama) in the UI."
-            )
-        try:
-            from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        except ImportError:
-            raise RuntimeError(
-                "Gemini embeddings require langchain-google-genai. pip install langchain-google-genai"
-            )
-        model = get_gemini_embedding_model()
-        _embeddings_cache[cache_key] = GoogleGenerativeAIEmbeddings(
-            model=model,
-            google_api_key=api_key,
-        )
-        return _embeddings_cache[cache_key]
-
-    try:
-        from langchain_ollama import OllamaEmbeddings
-    except ImportError:
-        raise RuntimeError(
-            "Ollama embeddings require langchain-ollama. pip install langchain-ollama"
-        )
-    model = get_embedding_model_id()
-    base_url = get_ollama_host()
-    _embeddings_cache[cache_key] = OllamaEmbeddings(model=model, base_url=base_url)
-    return _embeddings_cache[cache_key]
+def current_embedding_dimension() -> Optional[int]:
+    """Vector size of the current embedding model. Probed once on first use."""
+    return litellm_client.embedding_dimension(current_embedding_model())
 
 
-def clear_embeddings_cache() -> None:
-    """Drop cached embedding clients (e.g. after API key change)."""
-    _embeddings_cache.clear()
+def current_collection_name() -> str:
+    """
+    Qdrant collection for RAG chunks at the current embedding model.
+    Format: rag_chunks__<provider>__<model>__<dim>.
+    Omits the dim suffix when probing failed (offline / model not ready).
+    """
+    model_id = current_embedding_model()
+    provider = litellm_client.detect_provider(model_id)
+    model_name = litellm_client.strip_provider(model_id)
+    slug = _sanitize(f"{provider}__{model_name}")
+    dim = current_embedding_dimension()
+    if dim:
+        return f"rag_chunks__{slug}__{dim}"
+    return f"rag_chunks__{slug}"
 
 
 def embed_text(text: str, llm_provider: Optional[str] = None) -> List[float]:
-    """Embed a single string; returns list of floats."""
+    """
+    Embed one string.
+    llm_provider param is accepted for back-compat but ignored — the embedding
+    model is configured globally and is independent of the chat provider.
+    """
     if not (text or "").strip():
         return []
-    backend = _backend_for_provider(llm_provider)
-    emb = _get_embeddings(backend)
-    return emb.embed_query(text.strip())
+    vecs = litellm_client.embed(current_embedding_model(), [text.strip()])
+    return vecs[0] if vecs else []
 
 
 def embed_texts(texts: List[str], llm_provider: Optional[str] = None) -> List[List[float]]:
-    """Embed multiple strings; returns list of vectors."""
-    if not texts:
-        return []
-    stripped = [t.strip() for t in texts if (t or "").strip()]
+    """Embed multiple strings. llm_provider accepted for back-compat but ignored."""
+    stripped = [t.strip() for t in (texts or []) if (t or "").strip()]
     if not stripped:
         return []
-    backend = _backend_for_provider(llm_provider)
-    emb = _get_embeddings(backend)
-    return emb.embed_documents(stripped)
+    return litellm_client.embed(current_embedding_model(), stripped)
+
+
+def clear_embeddings_cache() -> None:
+    """Reset cached embedding-dim probe (e.g. after model change)."""
+    litellm_client.clear_caches()
 
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:
-    """Cosine similarity between two vectors. Assumes non-zero."""
+    """Cosine similarity between two vectors. Returns 0 for empty / zero vectors."""
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
